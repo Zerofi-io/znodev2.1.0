@@ -601,13 +601,20 @@ export async function monitorNetwork(node, DRY_RUN) {
 
         let p2pOnlineCount = 0;
         if (node.p2p && typeof node.p2p.getQueuePeers === 'function' && eligible.length > 0) {
-          const selfAddr = node.wallet.address.toLowerCase();
-          const recent = await node.p2p.getQueuePeers();
-          const addrSet = new Set(recent.map((a) => a.toLowerCase()));
-          addrSet.add(selfAddr);
-          for (const addr of eligible) {
-            if (addrSet.has(addr.toLowerCase())) {
-              p2pOnlineCount++;
+          try {
+            const selfAddr = node.wallet.address.toLowerCase();
+            const recent = await node.p2p.getQueuePeers();
+            const addrSet = new Set(recent.map((a) => a.toLowerCase()));
+            addrSet.add(selfAddr);
+            for (const addr of eligible) {
+              if (addrSet.has(addr.toLowerCase())) {
+                p2pOnlineCount++;
+              }
+            }
+          } catch {
+            const selfAddr = node.wallet.address.toLowerCase();
+            if (eligible.some((a) => a.toLowerCase() === selfAddr)) {
+              p2pOnlineCount = 1;
             }
           }
         } else if (eligible.length > 0) {
