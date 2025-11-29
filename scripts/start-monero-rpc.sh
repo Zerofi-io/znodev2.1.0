@@ -52,15 +52,14 @@ RPC_CMD=(
 # To enable multisig experimental mode, run once per wallet in monero-wallet-cli:
 #   set enable-multisig-experimental 1
 
-if [ -n "$RPC_USER" ] && [ -n "$RPC_PASS" ]; then
-  RPC_CMD+=(--rpc-login "$RPC_USER:$RPC_PASS")
-  echo "[start-monero-rpc] RPC authentication enabled"
-else
-  echo "[start-monero-rpc] ERROR: RPC authentication required for security"
-  echo "[start-monero-rpc] Set MONERO_WALLET_RPC_USER and MONERO_WALLET_RPC_PASSWORD in your .env file"
-  echo "[start-monero-rpc] These credentials protect your Monero wallet from unauthorized access"
-  exit 1
+if [ -z "$RPC_USER" ] || [ -z "$RPC_PASS" ]; then
+  RPC_USER="${RPC_USER:-znode_rpc}"
+  RPC_PASS="${RPC_PASS:-znode_rpc_pw}"
+  echo "[start-monero-rpc] RPC credentials not set; using default testing credentials"
 fi
+
+RPC_CMD+=(--rpc-login "$RPC_USER:$RPC_PASS")
+echo "[start-monero-rpc] RPC authentication enabled"
 
 if [ "$BIND" != "127.0.0.1" ] && [ "${TEST_MODE:-0}" != "1" ]; then
   echo "[start-monero-rpc] ⚠️  WARNING: Binding to $BIND in production mode"
