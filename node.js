@@ -184,13 +184,11 @@ class ZNode {
     ];
 
     const bridgeABI = [
-      'function mint(bytes32 depositId, uint256 amount, bytes memory signature) external',
-      'function burnForXMR(uint256 amount, string calldata xmrAddress) external',
-      'function balanceOf(address account) view returns (uint256)',
-      'function decimals() view returns (uint8)',
+      'function mint(bytes32 clusterId, bytes32 depositId, uint256 amount, bytes signature) external',
+      'function burnForXMR(bytes32 clusterId, uint256 amount, string xmrAddress) external',
       'function isSignatureUsed(bytes signature) external view returns (bool)',
-      'event TokensMinted(address indexed user, bytes32 indexed depositId, uint256 amount)',
-      'event TokensBurned(address indexed user, string xmrAddress, uint256 amount, uint256 fee)',
+      'event TokensMinted(address indexed user, bytes32 indexed clusterId, bytes32 indexed depositId, uint256 userAmount, uint256 fee)',
+      'event TokensBurned(address indexed user, bytes32 indexed clusterId, string xmrAddress, uint256 burnAmount, uint256 fee)',
     ];
 
     const KNOWN_DEFAULTS = {
@@ -199,7 +197,7 @@ class ZNode {
         STAKING_ADDR: '0xDA7D0c03d79dc4fA593DfFb93BC4d09F3D0b35Cc',
         ZFI_ADDR: '0x7bdFAE73c17aFAaA2DCCbD115F4CD920e40ad071',
         COORDINATOR_ADDR: '0xA02269FDCbA510B4D6aE6E36FcCC0Cdde0164815',
-        BRIDGE_ADDR: '0x81c878EeFf17d965D048435BBB01f8dA479eC801',
+        BRIDGE_ADDR: '0xD35D383298ea021945d91A0F9ead65c101bdA384',
       },
     };
 
