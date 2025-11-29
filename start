@@ -113,7 +113,7 @@ build_p2p_daemon
 ensure_firewall
 
 echo "[start] Starting Monero wallet RPC..."
-./start-monero-rpc.sh || { echo "[start] Failed to start Monero RPC"; exit 1; }
+./scripts/start-monero-rpc.sh || { echo "[start] Failed to start Monero RPC"; exit 1; }
 
 echo "[start] Starting znode..."
 nohup node node.js >> "$LOG_FILE" 2>&1 &
