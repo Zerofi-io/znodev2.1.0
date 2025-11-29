@@ -2,12 +2,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT_DIR"
 
-if [ -f "$SCRIPT_DIR/.env" ]; then
-  # Load and export variables from .env so MONERO_WALLET_RPC_* and others are available
+if [ -f "$ROOT_DIR/.env" ]; then
   set -a
-  . "$SCRIPT_DIR/.env"
+  . "$ROOT_DIR/.env"
   set +a
 fi
 
