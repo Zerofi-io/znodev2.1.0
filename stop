@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+PID_FILE="$SCRIPT_DIR/znode.pid"
+P2P_SOCKET="/tmp/znode-p2p.sock"
+
+# Stop p2p-daemon if running (it's a child of node.js but may linger)
+stop_p2p_daemon() {
+  # Find p2p-daemon process
+  local daemon_pids=$(pgrep -f "p2p-daemon.*--socket" 2>/dev/null || true)
+  if [ -n "$daemon_pids" ]; then
+    echo "[stop] Stopping p2p-daemon..."
+    for pid in $daemon_pids; do
+      kill "$pid" 2>/dev/null || true
+    done
+    sleep 1
+    # Force kill if still running
+    for pid in $daemon_pids; do
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+      fi
+    done
+  fi
+  
+  # Clean up socket file
+  if [ -e "$P2P_SOCKET" ]; then
+    rm -f "$P2P_SOCKET"
+  fi
+}
+
+if [ ! -f "$PID_FILE" ]; then
+  echo "[stop] No pidfile found ($PID_FILE). Is znode running?"
+  stop_p2p_daemon
+  exit 0
+fi
+
+PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+if [ -z "$PID" ]; then
+  echo "[stop] Empty pidfile, removing."
+  rm -f "$PID_FILE"
+  stop_p2p_daemon
+  exit 0
+fi
+
+if ! kill -0 "$PID" 2>/dev/null; then
+  echo "[stop] No process with PID $PID, removing stale pidfile."
+  rm -f "$PID_FILE"
+  stop_p2p_daemon
+  exit 0
+fi
+
+echo "[stop] Stopping znode (PID $PID)..."
+kill "$PID" || true
+
+# Wait up to 30s for clean shutdown
+for i in $(seq 1 30); do
+  if ! kill -0 "$PID" 2>/dev/null; then
+    echo "[stop] znode stopped."
+    rm -f "$PID_FILE"
+    stop_p2p_daemon
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "[stop] Process did not exit after 30s, sending SIGKILL."
+kill -9 "$PID" 2>/dev/null || true
+rm -f "$PID_FILE"
+stop_p2p_daemon
+echo "[stop] znode forcibly stopped."

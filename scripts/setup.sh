@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+cd "$SCRIPT_DIR/.."
 
 echo "╔════════════════════════════════════════════════════════════════╗"
 echo "║                    ZNode Setup Script                          ║"
@@ -42,7 +42,7 @@ install_go() {
   sudo tar -C /usr/local -xzf go.tar.gz
   rm go.tar.gz
   export PATH="/usr/local/go/bin:$PATH"
-  cd "$SCRIPT_DIR"
+  cd "$SCRIPT_DIR/.."
 }
 
 # Check if Go is installed and version is sufficient
@@ -83,7 +83,7 @@ echo ""
 
 # --- Collect configuration ---
 echo "[5/6] Configuring environment..."
-ENV_FILE="$SCRIPT_DIR/.env"
+ENV_FILE="$SCRIPT_DIR/../.env"
 if [ -f "$ENV_FILE" ]; then
   echo "⚠️  Existing .env file detected"
   read -r -p "Overwrite existing .env? [y/N]: " ans
