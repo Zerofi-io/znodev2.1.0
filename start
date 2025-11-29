@@ -22,6 +22,13 @@ fi
 
 MAX_LOG_SIZE="${MAX_LOG_SIZE_MB:-100}"  # Default 100MB
 MAX_LOG_FILES="${MAX_LOG_FILES:-5}"     # Keep 5 rotated logs
+LOG_MAX_AGE_MIN="${LOG_MAX_AGE_MIN:-1440}"  # Default 24h
+
+clean_old_logs() {
+  find "$SCRIPT_DIR" -maxdepth 1 -type f \
+    \( -name "znode.log*" -o -name "monero-rpc.log*" -o -name "monero-wallet-rpc.log*" \) \
+    -mmin "+$LOG_MAX_AGE_MIN" -print -delete 2>/dev/null || true
+}
 
 # Log rotation function
 rotate_logs() {
@@ -115,7 +122,8 @@ if [ -f "$PID_FILE" ]; then
   fi
 fi
 
-# Rotate logs before starting
+# Clean up old logs and rotate before starting
+clean_old_logs
 rotate_logs
 
 # Build p2p-daemon if needed
