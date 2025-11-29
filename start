@@ -8,6 +8,18 @@ PID_FILE="$SCRIPT_DIR/znode.pid"
 LOG_FILE="$SCRIPT_DIR/znode.log"
 P2P_DAEMON_DIR="$SCRIPT_DIR/p2p-daemon"
 P2P_DAEMON_BIN="$P2P_DAEMON_DIR/p2p-daemon"
+NODE_MODULES_DIR="$SCRIPT_DIR/node_modules"
+
+# Ensure Node.js dependencies are installed
+if [ ! -d "$NODE_MODULES_DIR" ] || [ ! -f "$NODE_MODULES_DIR/dotenv/package.json" ]; then
+  echo "[start] Installing Node.js dependencies..."
+  if [ -f "$SCRIPT_DIR/package-lock.json" ]; then
+    (cd "$SCRIPT_DIR" && npm ci --omit=dev)
+  else
+    (cd "$SCRIPT_DIR" && npm install --omit=dev)
+  fi
+fi
+
 MAX_LOG_SIZE="${MAX_LOG_SIZE_MB:-100}"  # Default 100MB
 MAX_LOG_FILES="${MAX_LOG_FILES:-5}"     # Keep 5 rotated logs
 

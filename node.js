@@ -1113,7 +1113,7 @@ class ZNode {
           console.log(`[OK] Base wallet created: ${this.baseWalletName}`);
 
           try {
-            const backupScript = path.join(__dirname, 'auto-backup-wallet.sh');
+            const backupScript = path.join(__dirname, 'scripts', 'auto-backup-wallet.sh');
             if (fs.existsSync(backupScript)) {
               try {
                 fs.accessSync(backupScript, fs.constants.X_OK);
@@ -1826,7 +1826,7 @@ class ZNode {
           console.log(`  [OK] New base wallet created: ${this.baseWalletName}`);
 
           try {
-            const backupScript = path.join(__dirname, 'auto-backup-wallet.sh');
+            const backupScript = path.join(__dirname, 'scripts', 'auto-backup-wallet.sh');
             if (fs.existsSync(backupScript)) {
               try {
                 fs.accessSync(backupScript, fs.constants.X_OK);
@@ -2454,7 +2454,7 @@ class ZNode {
       const finalAddr = getAddrResult.address;
 
       try {
-        const backupScript = path.join(__dirname, 'auto-backup-wallet.sh');
+        const backupScript = path.join(__dirname, 'scripts', 'auto-backup-wallet.sh');
         if (fs.existsSync(backupScript)) {
           await execFileAsync(backupScript, [], {
             cwd: __dirname,
