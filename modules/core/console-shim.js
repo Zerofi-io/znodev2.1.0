@@ -19,21 +19,15 @@ console.log = function (...args) {
   } else if (args.length === 1 && typeof args[0] === 'object') {
     logger.info('console.log', args[0]);
   } else {
-    const message = args.find((arg) => typeof arg === 'string') || 'console.log';
-    const objectArgs = args.filter((arg) => typeof arg === 'object' && arg !== null);
-    const otherArgs = args.filter(
-      (arg) => typeof arg !== 'string' && (typeof arg !== 'object' || arg === null),
-    );
-
-    const meta = {};
-    if (objectArgs.length > 0) {
-      meta.objects = objectArgs;
-    }
-    if (otherArgs.length > 0) {
-      meta.other = otherArgs.map(String);
-    }
-
-    logger.info(message, meta);
+    const message = args.map(arg => {
+      if (arg === null) return 'null';
+      if (arg === undefined) return 'undefined';
+      if (typeof arg === 'object') {
+        try { return JSON.stringify(arg); } catch { return String(arg); }
+      }
+      return String(arg);
+    }).join(' ');
+    logger.info(message);
   }
 };
 
@@ -45,21 +39,15 @@ console.warn = function (...args) {
   } else if (args.length === 1 && typeof args[0] === 'object') {
     logger.warn('console.warn', args[0]);
   } else {
-    const message = args.find((arg) => typeof arg === 'string') || 'console.warn';
-    const objectArgs = args.filter((arg) => typeof arg === 'object' && arg !== null);
-    const otherArgs = args.filter(
-      (arg) => typeof arg !== 'string' && (typeof arg !== 'object' || arg === null),
-    );
-
-    const meta = {};
-    if (objectArgs.length > 0) {
-      meta.objects = objectArgs;
-    }
-    if (otherArgs.length > 0) {
-      meta.other = otherArgs.map(String);
-    }
-
-    logger.warn(message, meta);
+    const message = args.map(arg => {
+      if (arg === null) return 'null';
+      if (arg === undefined) return 'undefined';
+      if (typeof arg === 'object') {
+        try { return JSON.stringify(arg); } catch { return String(arg); }
+      }
+      return String(arg);
+    }).join(' ');
+    logger.warn(message);
   }
 };
 
@@ -103,21 +91,15 @@ console.debug = function (...args) {
   } else if (args.length === 1 && typeof args[0] === 'object') {
     logger.debug('console.debug', args[0]);
   } else {
-    const message = args.find((arg) => typeof arg === 'string') || 'console.debug';
-    const objectArgs = args.filter((arg) => typeof arg === 'object' && arg !== null);
-    const otherArgs = args.filter(
-      (arg) => typeof arg !== 'string' && (typeof arg !== 'object' || arg === null),
-    );
-
-    const meta = {};
-    if (objectArgs.length > 0) {
-      meta.objects = objectArgs;
-    }
-    if (otherArgs.length > 0) {
-      meta.other = otherArgs.map(String);
-    }
-
-    logger.debug(message, meta);
+    const message = args.map(arg => {
+      if (arg === null) return 'null';
+      if (arg === undefined) return 'undefined';
+      if (typeof arg === 'object') {
+        try { return JSON.stringify(arg); } catch { return String(arg); }
+      }
+      return String(arg);
+    }).join(' ');
+    logger.debug(message);
   }
 };
 
