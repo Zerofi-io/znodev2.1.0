@@ -149,24 +149,28 @@ class ZNode {
       'function registerNode(bytes32 codeHash) external',
       'function unregisterNode() external',
       'function finalizeCluster(address[] members, string moneroAddress) external returns (bytes32 clusterId)',
+      'function dissolveCluster(bytes32 clusterId) external returns (bool rewarded)',
       'function clusters(bytes32) external view returns (address[] members, string moneroAddress, uint256 createdAt, bool finalized)',
       'function getRegisteredNodes(uint256 offset, uint256 limit) external view returns (address[] memory)',
       'function canParticipate(address node) external view returns (bool)',
+      'function canDissolve(bytes32 clusterId) external view returns (bool, uint256 blacklistedCount)',
+      'function isClusterActive(bytes32 clusterId) external view returns (bool)',
+      'function getClusterMembers(bytes32 clusterId) external view returns (address[] memory)',
+      'function getClusterHealth(bytes32 clusterId) external view returns (uint256 healthy, uint256 slashed, uint256 blacklisted)',
+      'function canRejoinCluster(address node) external view returns (bool canRejoin, bytes32 clusterId)',
       'function nodes(address) external view returns (bytes32 codeHash, bool registered, bool inCluster)',
+      'function nodeToCluster(address) external view returns (bytes32)',
     ];
 
     const stakingABI = [
       'function getNodeInfo(address node) external view returns (uint256,uint256,uint256,bool,uint256,uint256,uint256)',
       'function stake(bytes32 _codeHash, string _moneroFeeAddress) external',
       'function topUpStake() external',
-      'function heartbeat() external',
-      'function recordP2PHeartbeat(address _node) external',
       'function getActiveNodes() external view returns (address[] memory)',
-      'function slashForDowntimeProgressive(address _node) external',
       'function slashForDowntimeWithProof(address _node, uint256 lastHeartbeatTs, bytes calldata sig) external',
-      'function checkSlashingStatus(address _node) external view returns (bool needsSlash, uint256 stage, uint256 hoursOffline)',
+      'function getSlashingInfo(address _node) external view returns (uint256 slashingStage, uint256 lastProved, bool isBlacklisted)',
       'function isBlacklisted(address _node) external view returns (bool)',
-      'function heartbeatOracle() external view returns (address)',
+      'function getDissolutionPool() external view returns (uint256)',
       'function owner() external view returns (address)',
     ];
 
@@ -176,7 +180,6 @@ class ZNode {
       'function approve(address spender, uint256 amount) returns (bool)',
       'function decimals() view returns (uint8)',
     ];
-
     const exchangeCoordinatorABI = [
       'function submitExchangeInfo(bytes32 clusterId, uint8 round, string exchangeInfo, address[] clusterNodes) external',
       'function getExchangeRoundInfo(bytes32 clusterId, uint8 round, address[] clusterNodes) external view returns (address[] addresses, string[] exchangeInfos)',
