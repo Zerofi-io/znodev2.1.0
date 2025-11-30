@@ -288,9 +288,10 @@ export async function monitorNetwork(node, DRY_RUN) {
         } catch (_ignored) {}
       }
 
+      let blockNumber = 0;
       let epochSeed = ethers.ZeroHash;
       try {
-        let blockNumber = await node.provider.getBlockNumber();
+        blockNumber = await node.provider.getBlockNumber();
         blockNumber = Math.max(0, blockNumber - 5); // Safe block for consensus
         const rawSpan = process.env.SELECTION_EPOCH_BLOCKS;
         const parsedSpan = rawSpan != null ? Number(rawSpan) : NaN;
