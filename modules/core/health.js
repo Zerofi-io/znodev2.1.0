@@ -153,6 +153,9 @@ export async function checkEmergencySweep(node) {
       }
 
       try {
+        if (typeof node._clearClusterState === 'function') {
+          node._clearClusterState();
+        }
         if (node._activeClusterId) {
           try {
             await node._cleanupClusterAttempt(node._activeClusterId);

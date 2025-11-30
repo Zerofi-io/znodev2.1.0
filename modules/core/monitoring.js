@@ -428,6 +428,9 @@ export async function monitorNetwork(node, DRY_RUN) {
               }
             }
             node._clusterFinalized = true;
+            if (typeof node._saveClusterState === 'function') {
+              node._saveClusterState();
+            }
             node.stateMachine.transition(
               'ACTIVE',
               { clusterId: node._activeClusterId },

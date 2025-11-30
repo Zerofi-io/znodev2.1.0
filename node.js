@@ -454,6 +454,103 @@ class ZNode {
     });
   }
 
+
+  _getClusterStatePath() {
+    return path.join(__dirname, '.cluster-state.json');
+  }
+
+  _saveClusterState() {
+    if (!this._activeClusterId || !this._clusterFinalized) {
+      return;
+    }
+    try {
+      const state = {
+        clusterId: this._activeClusterId,
+        members: this._clusterMembers,
+        finalAddress: this._clusterFinalAddress,
+        walletName: this.clusterWalletName,
+        savedAt: Date.now(),
+      };
+      const statePath = this._getClusterStatePath();
+      const tmpPath = statePath + '.' + Date.now() + '.tmp';
+      fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2), { mode: 0o600 });
+      fs.renameSync(tmpPath, statePath);
+      console.log('[Cluster] Saved cluster state to disk');
+    } catch (e) {
+      console.log('[Cluster] Failed to save cluster state:', e.message || String(e));
+    }
+  }
+
+  _clearClusterState() {
+    try {
+      const statePath = this._getClusterStatePath();
+      if (fs.existsSync(statePath)) {
+        fs.unlinkSync(statePath);
+        console.log('[Cluster] Cleared persisted cluster state');
+      }
+    } catch (e) {
+      console.log('[Cluster] Failed to clear cluster state:', e.message || String(e));
+    }
+  }
+
+  async _verifyAndRestoreCluster() {
+    const statePath = this._getClusterStatePath();
+    if (!fs.existsSync(statePath)) {
+      return false;
+    }
+    let state;
+    try {
+      state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    } catch (e) {
+      console.log('[Cluster] Failed to load cluster state:', e.message || String(e));
+      return false;
+    }
+    if (!state.clusterId || !state.members || !state.finalAddress) {
+      console.log('[Cluster] Invalid cluster state file');
+      this._clearClusterState();
+      return false;
+    }
+    try {
+      const clusterInfo = await this.registry.clusters(state.clusterId);
+      const finalized = clusterInfo && clusterInfo[3];
+      const onChainAddress = clusterInfo && clusterInfo[1];
+      const onChainMembers = clusterInfo && clusterInfo[0];
+      if (!finalized) {
+        console.log('[Cluster] Saved cluster is not finalized on-chain, clearing state');
+        this._clearClusterState();
+        return false;
+      }
+      if (onChainAddress !== state.finalAddress) {
+        console.log('[Cluster] Cluster address mismatch, clearing state');
+        this._clearClusterState();
+        return false;
+      }
+      const myAddress = this.wallet.address.toLowerCase();
+      const memberAddresses = (onChainMembers || []).map(a => a.toLowerCase());
+      if (!memberAddresses.includes(myAddress)) {
+        console.log('[Cluster] Not a member of saved cluster, clearing state');
+        this._clearClusterState();
+        return false;
+      }
+      this._activeClusterId = state.clusterId;
+      this._clusterMembers = state.members;
+      this._clusterFinalAddress = state.finalAddress;
+      this._clusterFinalized = true;
+      this.clusterWalletName = state.walletName;
+      if (this.p2p && typeof this.p2p.setActiveCluster === 'function') {
+        this.p2p.setActiveCluster(state.clusterId);
+      }
+      console.log('[Cluster] Restored finalized cluster from on-chain state');
+      console.log('  ClusterId: ' + state.clusterId.slice(0, 18) + '...');
+      console.log('  Monero address: ' + state.finalAddress.slice(0, 24) + '...');
+      console.log('  Members: ' + state.members.length);
+      return true;
+    } catch (e) {
+      console.log('[Cluster] Failed to verify cluster on-chain:', e.message || String(e));
+      return false;
+    }
+  }
+
   async _withRetry(fn, options = {}) {
     return withRetry(fn, {
       ...options,
@@ -823,7 +920,41 @@ class ZNode {
       }
 
       await this.ensureRegistered();
-      await this.monitorNetwork();
+      const restoredCluster = await this._verifyAndRestoreCluster();
+      if (restoredCluster && this.clusterWalletName) {
+        try {
+          await this.monero.openWallet(this.clusterWalletName, this.moneroPassword);
+          console.log('[Cluster] Opened cluster wallet: ' + this.clusterWalletName);
+        } catch (e) {
+          console.log('[Cluster] Failed to open cluster wallet:', e.message || String(e));
+          this._activeClusterId = null;
+          this._clusterMembers = null;
+          this._clusterFinalAddress = null;
+          this._clusterFinalized = false;
+          this._clearClusterState();
+        }
+      }
+      if (this._clusterFinalized) {
+        console.log('[Cluster] Resuming active cluster, starting monitors...');
+        this.stateMachine.transition('ACTIVE', { clusterId: this._activeClusterId }, 'restored from on-chain');
+        try {
+          await this.startDepositMonitor();
+        } catch (e) {
+          console.log('[Bridge] Failed to start deposit monitor:', e.message || String(e));
+        }
+        try {
+          this.startBridgeAPI();
+        } catch (e) {
+          console.log('[BridgeAPI] Failed to start API:', e.message || String(e));
+        }
+        try {
+          await this.startWithdrawalMonitor();
+        } catch (e) {
+          console.log('[Withdrawal] Failed to start withdrawal monitor:', e.message || String(e));
+        }
+      } else {
+        await this.monitorNetwork();
+      }
       this.startSlashingLoop();
     } catch (e) {
       console.error('\n[ERROR] Startup failed:', e.message || String(e));
@@ -1663,6 +1794,7 @@ class ZNode {
   }
 
   async _retireClusterWalletAndBackups(reason) {
+    this._clearClusterState();
     if (!this._clusterFinalAddress) {
       return;
     }
