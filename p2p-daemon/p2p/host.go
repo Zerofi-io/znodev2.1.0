@@ -144,6 +144,7 @@ func NewHost(ctx context.Context, config *HostConfig) (*Host, error) {
 
 	host.presel = NewPreSelectionManager(host)
 	host.presel.SetupHandler()
+	host.presel.StartCleanup(ctx, 5*time.Minute, 10*time.Minute)
 
 	// Connect to bootstrap peers
 	var bootstrapPeers []peer.AddrInfo

@@ -343,7 +343,7 @@ export async function monitorNetwork(node, DRY_RUN) {
         }
       } catch (_ignored) {}
 
-      return { members, clusterId };
+      return { members, clusterId, blockNumber, epochSeed, uniqueCandidates };
     } catch (e) {
       console.log('Cluster candidate compute error:', e.message || String(e));
       return null;
@@ -714,6 +714,41 @@ export async function monitorNetwork(node, DRY_RUN) {
 
       if (!candidate) {
         return;
+      }
+
+
+      // Pre-selection consensus (enabled via ENABLE_PRESELECTION=1)
+      const enablePreSel = process.env.ENABLE_PRESELECTION === '1';
+      if (enablePreSel && candidate.uniqueCandidates && candidate.blockNumber) {
+        console.log('[PreSelection] Running pre-selection consensus...');
+        const preSelResult = await runPreSelectionConsensus(
+          candidate.uniqueCandidates,
+          candidate.blockNumber,
+          candidate.epochSeed,
+        );
+        if (!preSelResult.success) {
+          console.log('[PreSelection] Pre-selection consensus failed, aborting cluster formation');
+          return;
+        }
+        // If coordinator's candidates differ, recompute members from consensus candidates
+        if (preSelResult.candidates && preSelResult.epochSeed) {
+          const consensusCandidates = preSelResult.candidates.map((a) => a.toLowerCase());
+          const scored = consensusCandidates.map((lower) => {
+            const score = ethers.keccak256(
+              ethers.solidityPacked(['bytes32', 'address'], [preSelResult.epochSeed, lower]),
+            );
+            return { lower, score };
+          });
+          scored.sort((a, b) => a.score.localeCompare(b.score));
+          const chosen = scored.slice(0, clusterSize);
+          const newMembersLower = chosen.map((x) => x.lower);
+          const newMembers = newMembersLower.map((addr) => ethers.getAddress(addr));
+          const sortedNew = [...newMembersLower].sort();
+          const addressTypes = Array(clusterSize).fill('address');
+          const newClusterId = ethers.keccak256(ethers.solidityPacked(addressTypes, sortedNew));
+          candidate = { members: newMembers, clusterId: newClusterId };
+          console.log('[PreSelection] Using consensus-derived members, clusterId:', newClusterId.substring(0, 18));
+        }
       }
 
       const { members, clusterId } = candidate;

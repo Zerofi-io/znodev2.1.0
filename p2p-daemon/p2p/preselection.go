@@ -444,3 +444,20 @@ func (psm *PreSelectionManager) broadcastToAddresses(addresses []string, msg str
 		}(pid, msg)
 	}
 }
+
+// StartCleanup starts a background goroutine to periodically clean up old states
+func (psm *PreSelectionManager) StartCleanup(ctx context.Context, interval time.Duration, maxAge time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				psm.Cleanup(maxAge)
+			}
+		}
+	}()
+	log.Printf("[PreSelection] Cleanup routine started (interval=%v, maxAge=%v)", interval, maxAge)
+}
