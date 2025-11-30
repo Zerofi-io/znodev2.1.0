@@ -187,6 +187,14 @@ func (s *Server) dispatch(method string, params json.RawMessage) (interface{}, *
 		return s.handlers.GetHeartbeats(params)
 	case "P2P.WaitForIdentityBarrier":
 		return s.handlers.WaitForIdentityBarrier(params)
+	case "P2P.BroadcastPreSelection":
+		return s.handlers.BroadcastPreSelection(params)
+	case "P2P.VotePreSelection":
+		return s.handlers.VotePreSelection(params)
+	case "P2P.WaitPreSelection":
+		return s.handlers.WaitPreSelection(params)
+	case "P2P.GetPreSelectionProposal":
+		return s.handlers.GetPreSelectionProposal(params)
 	default:
 		return nil, &Error{
 			Code:    ErrCodeMethodNF,

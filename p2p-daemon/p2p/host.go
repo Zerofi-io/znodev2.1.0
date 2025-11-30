@@ -74,6 +74,7 @@ type IdentityData struct {
 
 // Host wraps a libp2p host with cluster coordination capabilities
 type Host struct {
+	presel     *PreSelectionManager
 	host       host.Host
 	ctx        context.Context
 	ethAddress string
@@ -140,6 +141,9 @@ func NewHost(ctx context.Context, config *HostConfig) (*Host, error) {
 	// Initialize PBFT manager
 	host.pbft = NewPBFTManager(host)
 	host.pbft.SetupHandler()
+
+	host.presel = NewPreSelectionManager(host)
+	host.presel.SetupHandler()
 
 	// Connect to bootstrap peers
 	var bootstrapPeers []peer.AddrInfo
@@ -1386,3 +1390,24 @@ func (h *Host) GetPBFTManager() *PBFTManager {
 	return h.pbft
 }
 
+
+// getPeerIDForAddress returns the peer ID for an Ethereum address from cluster bindings
+func (h *Host) getPeerIDForAddress(address string) string {
+	address = strings.ToLower(address)
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, cs := range h.clusters {
+		cs.mu.RLock()
+		if peerID, ok := cs.PeerBindings[address]; ok {
+			cs.mu.RUnlock()
+			return peerID
+		}
+		cs.mu.RUnlock()
+	}
+	return ""
+}
+
+// GetPreSelectionManager returns the pre-selection manager
+func (h *Host) GetPreSelectionManager() *PreSelectionManager {
+	return h.presel
+}

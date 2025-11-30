@@ -792,3 +792,176 @@ func (h *Handlers) RunConsensus(params json.RawMessage) (interface{}, *Error) {
 		Aborted:      result.Aborted,
 	}, nil
 }
+
+// BroadcastPreSelectionParams for P2P.BroadcastPreSelection
+type BroadcastPreSelectionParams struct {
+	BlockNumber uint64   `json:"blockNumber"`
+	EpochSeed   string   `json:"epochSeed"`
+	Candidates  []string `json:"candidates"`
+}
+
+// BroadcastPreSelectionResult for P2P.BroadcastPreSelection
+type BroadcastPreSelectionResult struct {
+	ProposalID string `json:"proposalId"`
+	Success    bool   `json:"success"`
+}
+
+func (h *Handlers) BroadcastPreSelection(params json.RawMessage) (interface{}, *Error) {
+	var p BroadcastPreSelectionParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, &Error{Code: ErrCodeInvalidArgs, Message: err.Error()}
+	}
+	if p.BlockNumber == 0 {
+		return nil, &Error{Code: ErrCodeInvalidArgs, Message: "blockNumber is required"}
+	}
+	if len(p.Candidates) == 0 {
+		return nil, &Error{Code: ErrCodeInvalidArgs, Message: "candidates is required"}
+	}
+
+	psm := h.host.GetPreSelectionManager()
+	if psm == nil {
+		return nil, &Error{Code: ErrCodeInternal, Message: "pre-selection manager not initialized"}
+	}
+
+	proposal, err := psm.BroadcastProposal(p.BlockNumber, p.EpochSeed, p.Candidates)
+	if err != nil {
+		return nil, &Error{Code: ErrCodeInternal, Message: err.Error()}
+	}
+
+	return &BroadcastPreSelectionResult{
+		ProposalID: proposal.ProposalID,
+		Success:    true,
+	}, nil
+}
+
+// VotePreSelectionParams for P2P.VotePreSelection
+type VotePreSelectionParams struct {
+	ProposalID      string   `json:"proposalId"`
+	Approved        bool     `json:"approved"`
+	LocalCandidates []string `json:"localCandidates,omitempty"`
+}
+
+// VotePreSelectionResult for P2P.VotePreSelection
+type VotePreSelectionResult struct {
+	Success bool `json:"success"`
+}
+
+func (h *Handlers) VotePreSelection(params json.RawMessage) (interface{}, *Error) {
+	var p VotePreSelectionParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, &Error{Code: ErrCodeInvalidArgs, Message: err.Error()}
+	}
+	if p.ProposalID == "" {
+		return nil, &Error{Code: ErrCodeInvalidArgs, Message: "proposalId is required"}
+	}
+
+	psm := h.host.GetPreSelectionManager()
+	if psm == nil {
+		return nil, &Error{Code: ErrCodeInternal, Message: "pre-selection manager not initialized"}
+	}
+
+	err := psm.VoteOnProposal(p.ProposalID, p.Approved, p.LocalCandidates)
+	if err != nil {
+		return nil, &Error{Code: ErrCodeInternal, Message: err.Error()}
+	}
+
+	return &VotePreSelectionResult{Success: true}, nil
+}
+
+// WaitPreSelectionParams for P2P.WaitPreSelection
+type WaitPreSelectionParams struct {
+	ProposalID     string   `json:"proposalId"`
+	ExpectedVoters []string `json:"expectedVoters"`
+	TimeoutMs      int      `json:"timeoutMs,omitempty"`
+}
+
+// WaitPreSelectionResult for P2P.WaitPreSelection
+type WaitPreSelectionResult struct {
+	ProposalID string   `json:"proposalId"`
+	Success    bool     `json:"success"`
+	Approved   int      `json:"approved"`
+	Total      int      `json:"total"`
+	Missing    []string `json:"missing,omitempty"`
+}
+
+func (h *Handlers) WaitPreSelection(params json.RawMessage) (interface{}, *Error) {
+	var p WaitPreSelectionParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, &Error{Code: ErrCodeInvalidArgs, Message: err.Error()}
+	}
+	if p.ProposalID == "" {
+		return nil, &Error{Code: ErrCodeInvalidArgs, Message: "proposalId is required"}
+	}
+	if len(p.ExpectedVoters) == 0 {
+		return nil, &Error{Code: ErrCodeInvalidArgs, Message: "expectedVoters is required"}
+	}
+
+	timeoutMs := p.TimeoutMs
+	if timeoutMs <= 0 {
+		timeoutMs = 60000
+	}
+
+	psm := h.host.GetPreSelectionManager()
+	if psm == nil {
+		return nil, &Error{Code: ErrCodeInternal, Message: "pre-selection manager not initialized"}
+	}
+
+	result, err := psm.WaitForConsensus(p.ProposalID, p.ExpectedVoters, timeoutMs)
+	if err != nil {
+		if result != nil {
+			return &WaitPreSelectionResult{
+				ProposalID: result.ProposalID,
+				Success:    result.Success,
+				Approved:   result.Approved,
+				Total:      result.Total,
+				Missing:    result.Missing,
+			}, &Error{Code: ErrCodeTimeout, Message: err.Error()}
+		}
+		return nil, &Error{Code: ErrCodeInternal, Message: err.Error()}
+	}
+
+	return &WaitPreSelectionResult{
+		ProposalID: result.ProposalID,
+		Success:    result.Success,
+		Approved:   result.Approved,
+		Total:      result.Total,
+	}, nil
+}
+
+// GetPreSelectionProposalParams for P2P.GetPreSelectionProposal
+type GetPreSelectionProposalParams struct {
+	ProposalID string `json:"proposalId,omitempty"`
+}
+
+func (h *Handlers) GetPreSelectionProposal(params json.RawMessage) (interface{}, *Error) {
+	var p GetPreSelectionProposalParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, &Error{Code: ErrCodeInvalidArgs, Message: err.Error()}
+	}
+
+	psm := h.host.GetPreSelectionManager()
+	if psm == nil {
+		return nil, &Error{Code: ErrCodeInternal, Message: "pre-selection manager not initialized"}
+	}
+
+	var proposal *p2p.PreSelectionProposal
+	if p.ProposalID != "" {
+		proposal = psm.GetPendingProposal(p.ProposalID)
+	} else {
+		proposal = psm.GetLatestProposal()
+	}
+
+	if proposal == nil {
+		return map[string]interface{}{"found": false}, nil
+	}
+
+	return map[string]interface{}{
+		"found":       true,
+		"proposalId":  proposal.ProposalID,
+		"blockNumber": proposal.BlockNumber,
+		"epochSeed":   proposal.EpochSeed,
+		"candidates":  proposal.Candidates,
+		"coordinator": proposal.Coordinator,
+		"timestamp":   proposal.Timestamp,
+	}, nil
+}

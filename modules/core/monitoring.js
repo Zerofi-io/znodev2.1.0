@@ -290,10 +290,11 @@ export async function monitorNetwork(node, DRY_RUN) {
 
       let epochSeed = ethers.ZeroHash;
       try {
-        const blockNumber = await node.provider.getBlockNumber();
+        let blockNumber = await node.provider.getBlockNumber();
+        blockNumber = Math.max(0, blockNumber - 5); // Safe block for consensus
         const rawSpan = process.env.SELECTION_EPOCH_BLOCKS;
         const parsedSpan = rawSpan != null ? Number(rawSpan) : NaN;
-        const epochSpan = Number.isFinite(parsedSpan) && parsedSpan > 0 ? parsedSpan : 20;
+        const epochSpan = Number.isFinite(parsedSpan) && parsedSpan > 0 ? parsedSpan : 100;
         const epoch = (Number(blockNumber) / epochSpan) | 0;
         epochSeed = ethers.keccak256(ethers.solidityPacked(['uint256'], [epoch]));
       } catch (_ignored) {}
@@ -346,6 +347,71 @@ export async function monitorNetwork(node, DRY_RUN) {
     } catch (e) {
       console.log('Cluster candidate compute error:', e.message || String(e));
       return null;
+    }
+  };
+
+
+
+  // Pre-selection consensus to agree on cluster members before formation
+  const runPreSelectionConsensus = async (localCandidates, blockNumber, epochSeed) => {
+    if (!node.p2p || typeof node.p2p.broadcastPreSelection !== 'function') {
+      return { success: false, candidates: localCandidates };
+    }
+    const sortedLocal = [...localCandidates].sort();
+    const selfAddrLower = selfAddr.toLowerCase();
+    const preSelCoordinator = sortedLocal[0];
+    const isPreSelCoord = preSelCoordinator === selfAddrLower;
+    const preSelTimeoutRaw = process.env.PRESELECTION_TIMEOUT_MS;
+    const preSelTimeoutParsed = preSelTimeoutRaw != null ? Number(preSelTimeoutRaw) : NaN;
+    const preSelTimeoutMs = Number.isFinite(preSelTimeoutParsed) && preSelTimeoutParsed > 0
+      ? preSelTimeoutParsed : 30000;
+    try {
+      if (isPreSelCoord) {
+        console.log('[PreSelection] Broadcasting proposal as coordinator...');
+        const result = await node.p2p.broadcastPreSelection(blockNumber, epochSeed, localCandidates);
+        if (!result || !result.proposalId) {
+          console.log('[PreSelection] Failed to broadcast proposal');
+          return { success: false, candidates: localCandidates };
+        }
+        const consensus = await node.p2p.waitPreSelection(result.proposalId, localCandidates, preSelTimeoutMs);
+        if (consensus && consensus.success) {
+          console.log(`[PreSelection] Consensus reached (${consensus.approved}/${consensus.total})`);
+          return { success: true, candidates: localCandidates, proposalId: result.proposalId };
+        }
+        console.log(`[PreSelection] Consensus failed - missing: ${(consensus?.missing || []).join(', ')}`);
+        return { success: false, candidates: localCandidates };
+      } else {
+        console.log(`[PreSelection] Waiting for proposal from ${preSelCoordinator.substring(0, 10)}...`);
+        const waitStart = Date.now();
+        let proposal = null;
+        while (Date.now() - waitStart < preSelTimeoutMs) {
+          proposal = await node.p2p.getPreSelectionProposal();
+          if (proposal && proposal.found) break;
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        if (!proposal || !proposal.found) {
+          console.log('[PreSelection] Timeout waiting for proposal');
+          return { success: false, candidates: localCandidates };
+        }
+        const receivedCandidates = (proposal.candidates || []).map((a) => a.toLowerCase()).sort();
+        const localSet = new Set(sortedLocal);
+        const matchCount = receivedCandidates.filter((c) => localSet.has(c)).length;
+        const matchRatio = matchCount / Math.max(receivedCandidates.length, sortedLocal.length);
+        const approved = matchRatio >= 0.8;
+        console.log(`[PreSelection] Match ratio: ${(matchRatio * 100).toFixed(1)}% (${approved ? 'approving' : 'rejecting'})`);
+        await node.p2p.votePreSelection(proposal.proposalId, approved, localCandidates);
+        if (!approved) return { success: false, candidates: localCandidates };
+        const consensus = await node.p2p.waitPreSelection(proposal.proposalId, receivedCandidates, preSelTimeoutMs);
+        if (consensus && consensus.success) {
+          console.log('[PreSelection] Consensus reached, using coordinator candidates');
+          return { success: true, candidates: proposal.candidates, proposalId: proposal.proposalId,
+            blockNumber: proposal.blockNumber, epochSeed: proposal.epochSeed };
+        }
+        return { success: false, candidates: localCandidates };
+      }
+    } catch (e) {
+      console.log('[PreSelection] Error:', e.message || String(e));
+      return { success: false, candidates: localCandidates };
     }
   };
 
@@ -659,6 +725,8 @@ export async function monitorNetwork(node, DRY_RUN) {
         return;
       }
       if (!membersLower.includes(selfAddr)) {
+        console.log(`[WARN] Self (${selfAddr}) not in computed cluster members`);
+        console.log(`[DEBUG] Members: ${membersLower.slice(0, 3).join(', ')}...`);
         return;
       }
 

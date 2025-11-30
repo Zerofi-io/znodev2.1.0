@@ -578,6 +578,42 @@ export default class P2PDaemonClient extends EventEmitter {
   topic(clusterId, sessionId) {
     return sessionId ? `${clusterId}:${sessionId}` : clusterId;
   }
+
+  async broadcastPreSelection(blockNumber, epochSeed, candidates) {
+    const result = await this.call(
+      'P2P.BroadcastPreSelection',
+      { blockNumber, epochSeed, candidates },
+      30000,
+    );
+    return result;
+  }
+
+  async votePreSelection(proposalId, approved, localCandidates = []) {
+    const result = await this.call(
+      'P2P.VotePreSelection',
+      { proposalId, approved, localCandidates },
+      10000,
+    );
+    return result;
+  }
+
+  async waitPreSelection(proposalId, expectedVoters, timeoutMs = 60000) {
+    const result = await this.call(
+      'P2P.WaitPreSelection',
+      { proposalId, expectedVoters, timeoutMs },
+      timeoutMs + 5000,
+    );
+    return result;
+  }
+
+  async getPreSelectionProposal(proposalId = null) {
+    const result = await this.call(
+      'P2P.GetPreSelectionProposal',
+      { proposalId },
+      10000,
+    );
+    return result;
+  }
 }
 
 class P2PError extends Error {
