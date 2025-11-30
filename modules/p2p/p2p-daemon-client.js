@@ -194,7 +194,8 @@ export default class P2PDaemonClient extends EventEmitter {
     clearTimeout(pending.timeout);
 
     if (error) {
-      pending.reject(new P2PError(error.message, error.code, error.data));
+      const errMsg = error.message || error.code || 'Unknown P2P error';
+      pending.reject(new P2PError(errMsg, error.code, error.data));
     } else {
       pending.resolve(result);
     }
@@ -581,9 +582,24 @@ export default class P2PDaemonClient extends EventEmitter {
 
 class P2PError extends Error {
   constructor(message, code, data) {
-    super(message);
+    super(message || 'P2P Error');
     this.name = 'P2PError';
     this.code = code;
     this.data = data;
+  }
+
+  toString() {
+    let str = `${this.name}: ${this.message}`;
+    if (this.code) str += ` (code: ${this.code})`;
+    return str;
+  }
+
+  toJSON() {
+    return {
+      name: this.name,
+      message: this.message,
+      code: this.code,
+      data: this.data,
+    };
   }
 }

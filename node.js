@@ -3153,11 +3153,17 @@ if (isMainModule) {
   };
 
   process.on('uncaughtException', (err) => {
-    if (err.name === 'StreamStateError' || err.message?.includes('stream that is closed')) {
+    if (err && (err.name === 'StreamStateError' || err.message?.includes('stream that is closed'))) {
       console.warn('[P2P] Stream closed during write (transient, ignoring):', err.message);
       return;
     }
-    console.error('Uncaught exception:', err);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const errStack = err instanceof Error ? err.stack : '';
+    const errName = err instanceof Error ? err.name : typeof err;
+    console.error(`Uncaught exception [${errName}]: ${errMsg}`);
+    if (errStack) {
+      console.error(errStack);
+    }
     process.exit(1);
   });
 

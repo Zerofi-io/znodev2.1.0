@@ -68,16 +68,22 @@ console.error = function (...args) {
     logger.error('');
   } else if (args.length === 1 && typeof args[0] === 'string') {
     logger.error(args[0]);
+  } else if (args.length === 1 && args[0] instanceof Error) {
+    logger.error(args[0].message || 'Error', { stack: args[0].stack, name: args[0].name });
   } else if (args.length === 1 && typeof args[0] === 'object') {
     logger.error('console.error', args[0]);
   } else {
     const message = args.find((arg) => typeof arg === 'string') || 'console.error';
-    const objectArgs = args.filter((arg) => typeof arg === 'object' && arg !== null);
+    const errorArgs = args.filter((arg) => arg instanceof Error);
+    const objectArgs = args.filter((arg) => typeof arg === 'object' && arg !== null && !(arg instanceof Error));
     const otherArgs = args.filter(
       (arg) => typeof arg !== 'string' && (typeof arg !== 'object' || arg === null),
     );
 
     const meta = {};
+    if (errorArgs.length > 0) {
+      meta.errors = errorArgs.map(e => ({ name: e.name, message: e.message, stack: e.stack }));
+    }
     if (objectArgs.length > 0) {
       meta.objects = objectArgs;
     }
