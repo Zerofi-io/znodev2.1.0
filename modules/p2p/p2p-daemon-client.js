@@ -16,7 +16,7 @@ export default class P2PDaemonClient extends EventEmitter {
       console.error('[P2P-Client] Client error:', err.message || String(err));
     });
     this.socketPath = options.socketPath || '/tmp/znode-p2p.sock';
-    this.daemonPath = options.daemonPath || path.join(__dirname, 'p2p-daemon', 'p2p-daemon');
+    this.daemonPath = options.daemonPath || path.join(__dirname, '..', '..', 'p2p-daemon', 'p2p-daemon');
     this.privateKey = options.privateKey;
     this.ethereumAddress = options.ethereumAddress;
     this.listenAddr = options.listenAddr || '/ip4/0.0.0.0/tcp/9000';
