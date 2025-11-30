@@ -151,6 +151,7 @@ async function handleAPIRequest(node, req, res, pathname, params) {
         clusterMembers: node._clusterMembers ? node._clusterMembers.length : 0,
         clusterFinalized: node._clusterFinalized,
         bridgeContract: node.bridge ? node.bridge.target || node.bridge.address : null,
+        clusterId: node._activeClusterId || null,
         minConfirmations: Number(process.env.MIN_DEPOSIT_CONFIRMATIONS || 10),
       });
     }
@@ -599,16 +600,24 @@ async function generateMintSignature(node, deposit, recipient) {
   }
 
   const depositId = ethers.keccak256(ethers.toUtf8Bytes(deposit.txid));
-
   const amountWei = BigInt(deposit.amount) * BigInt(1e6);
 
+  // Use the active clusterId for V2 signature binding. If we somehow don't have one,
+  // fall back to zero, which will cause signature verification to fail on-chain rather
+  // than mint to the wrong cluster.
+  const clusterId = node._activeClusterId || '0x0000000000000000000000000000000000000000000000000000000000000000';
+
   const messageHash = ethers.keccak256(
-    ethers.solidityPacked(['address', 'bytes32', 'uint256'], [recipient, depositId, amountWei]),
+    ethers.solidityPacked(
+      ['address', 'bytes32', 'bytes32', 'uint256'],
+      [recipient, clusterId, depositId, amountWei],
+    ),
   );
 
   const signature = await node.wallet.signMessage(ethers.getBytes(messageHash));
 
   console.log(`[Bridge] Generated mint signature for ${recipient}`);
+  console.log(`  Cluster ID: ${clusterId}`);
   console.log(`  Deposit ID: ${depositId}`);
   console.log(`  Amount: ${ethers.formatEther(amountWei)} zXMR`);
 
@@ -617,6 +626,7 @@ async function generateMintSignature(node, deposit, recipient) {
   }
 
   node._pendingMintSignatures.set(deposit.txid, {
+    clusterId,
     depositId,
     amount: amountWei.toString(),
     recipient,
@@ -625,7 +635,7 @@ async function generateMintSignature(node, deposit, recipient) {
     timestamp: Date.now(),
   });
 
-  return { depositId, amount: amountWei.toString(), signature };
+  return { clusterId, depositId, amount: amountWei.toString(), signature };
 }
 
 export function getMintSignature(node, xmrTxid) {
