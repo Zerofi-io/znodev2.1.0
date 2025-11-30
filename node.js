@@ -499,7 +499,7 @@ class ZNode {
   async _verifyAndRestoreCluster() {
     const statePath = this._getClusterStatePath();
     if (!fs.existsSync(statePath)) {
-      return false;
+      return await this._recoverClusterFromChain();
     }
     let state;
     try {
@@ -550,6 +550,92 @@ class ZNode {
       return true;
     } catch (e) {
       console.log('[Cluster] Failed to verify cluster on-chain:', e.message || String(e));
+      return false;
+    }
+  }
+
+  async _recoverClusterFromChain() {
+    try {
+      console.log('[Cluster] No state file found, checking on-chain for existing cluster membership...');
+      
+      // Check if this node is in a cluster on-chain
+      const myAddress = this.wallet.address;
+      const clusterId = await this.registry.nodeToCluster(myAddress);
+      
+      // Zero bytes32 means not in a cluster
+      if (!clusterId || clusterId === '0x0000000000000000000000000000000000000000000000000000000000000000') {
+        console.log('[Cluster] Node is not in any cluster on-chain');
+        return false;
+      }
+      
+      console.log('[Cluster] Found on-chain cluster:', clusterId.slice(0, 18) + '...');
+      
+      // Get cluster details
+      const isActive = await this.registry.isClusterActive(clusterId);
+      if (!isActive) {
+        console.log('[Cluster] On-chain cluster is not active');
+        return false;
+      }
+      
+      // Get cluster members and Monero address
+      const members = await this.registry.getClusterMembers(clusterId);
+      // Get monero address from clusters() - index 1
+      const clusterData = await this.registry.clusters(clusterId);
+      const moneroAddress = clusterData[1];
+      const finalized = clusterData[3];
+      
+      if (!finalized) {
+        console.log('[Cluster] On-chain cluster is not finalized');
+        return false;
+      }
+      
+      // Find existing wallet file
+      const walletDir = process.env.MONERO_WALLET_DIR || 
+        (process.env.HOME ? path.join(process.env.HOME, '.monero-wallets') : path.join(process.cwd(), '.monero-wallets'));
+      const shortEth = myAddress.slice(2, 10);
+      
+      // Look for wallet files matching pattern znode_att_{shortEth}_*
+      let walletName = null;
+      try {
+        const files = fs.readdirSync(walletDir);
+        const pattern = new RegExp(`^znode_att_${shortEth}_[a-fA-F0-9]{8}_\\d{2}\\.keys$`, 'i');
+        for (const file of files) {
+          if (pattern.test(file)) {
+            walletName = file.replace('.keys', '');
+            break;
+          }
+        }
+      } catch (e) {
+        console.log('[Cluster] Could not scan wallet directory:', e.message);
+      }
+      
+      if (!walletName) {
+        console.log('[Cluster] No matching wallet file found for recovery');
+        return false;
+      }
+      
+      // Restore state
+      this._activeClusterId = clusterId;
+      this._clusterMembers = Array.from(members);
+      this._clusterFinalAddress = moneroAddress;
+      this._clusterFinalized = true;
+      this.clusterWalletName = walletName;
+      
+      if (this.p2p && typeof this.p2p.setActiveCluster === 'function') {
+        this.p2p.setActiveCluster(clusterId);
+      }
+      
+      // Save the state so we don't need to recover again
+      this._saveClusterState();
+      
+      console.log('[Cluster] Recovered finalized cluster from on-chain data');
+      console.log('  ClusterId: ' + clusterId.slice(0, 18) + '...');
+      console.log('  Monero address: ' + moneroAddress.slice(0, 24) + '...');
+      console.log('  Members: ' + members.length);
+      console.log('  Wallet: ' + walletName);
+      return true;
+    } catch (e) {
+      console.log('[Cluster] Failed to recover cluster from chain:', e.message || String(e));
       return false;
     }
   }
