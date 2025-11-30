@@ -18,6 +18,14 @@ import (
 )
 
 const ProtocolPreSelection = "/znode/preselection/1.0.0"
+// safeTruncate safely truncates a string to maxLen
+func safeTruncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen]
+}
+
 
 // PreSelectionProposal represents a coordinator's proposed cluster formation
 type PreSelectionProposal struct {
@@ -131,7 +139,7 @@ func (psm *PreSelectionManager) BroadcastProposal(blockNumber uint64, epochSeed 
 	psm.broadcastToAddresses(candidates, msg)
 
 	log.Printf("[PreSelection] Broadcast proposal %s with %d candidates at block %d",
-		proposalID[:8], len(candidates), blockNumber)
+		safeTruncate(proposalID, 8), len(candidates), blockNumber)
 	return proposal, nil
 }
 
@@ -183,7 +191,7 @@ func (psm *PreSelectionManager) VoteOnProposal(proposalID string, approved bool,
 		psm.broadcastToAddresses(state.Proposal.Candidates, msg)
 	}
 
-	log.Printf("[PreSelection] Voted %t on proposal %s", approved, proposalID[:8])
+	log.Printf("[PreSelection] Voted %t on proposal %s", approved, safeTruncate(proposalID, 8))
 	return nil
 }
 
@@ -240,7 +248,7 @@ func (psm *PreSelectionManager) WaitForConsensus(proposalID string, expectedVote
 				state.Approved = true
 				state.mu.Unlock()
 				log.Printf("[PreSelection] Consensus reached for %s (%d/%d approved)",
-					proposalID[:8], approvedCount, requiredCount)
+					safeTruncate(proposalID, 8), approvedCount, requiredCount)
 				return &PreSelectionResult{
 					ProposalID: proposalID,
 					Success:    true,
@@ -255,7 +263,7 @@ func (psm *PreSelectionManager) WaitForConsensus(proposalID string, expectedVote
 				state.Approved = false
 				state.mu.Unlock()
 				log.Printf("[PreSelection] Timeout for %s (%d/%d approved, missing: %v)",
-					proposalID[:8], approvedCount, requiredCount, missing)
+					safeTruncate(proposalID, 8), approvedCount, requiredCount, missing)
 				return &PreSelectionResult{
 					ProposalID: proposalID,
 					Success:    false,
@@ -367,7 +375,7 @@ func (psm *PreSelectionManager) handleProposal(proposal *PreSelectionProposal) {
 		proposal.ProposalID, proposal.BlockNumber, proposal.EpochSeed,
 		strings.Join(proposal.Candidates, ","))
 	if !verifyPayloadSignature(payload, proposal.Signature, proposal.Coordinator) {
-		log.Printf("[PreSelection] Invalid signature on proposal from %s", proposal.Coordinator[:8])
+		log.Printf("[PreSelection] Invalid signature on proposal from %s", safeTruncate(proposal.Coordinator, 8))
 		return
 	}
 
@@ -378,13 +386,13 @@ func (psm *PreSelectionManager) handleProposal(proposal *PreSelectionProposal) {
 	psm.mu.Unlock()
 
 	log.Printf("[PreSelection] Received proposal %s from %s (block %d, %d candidates)",
-		proposal.ProposalID[:8], proposal.Coordinator[:8], proposal.BlockNumber, len(proposal.Candidates))
+		safeTruncate(proposal.ProposalID, 8), safeTruncate(proposal.Coordinator, 8), proposal.BlockNumber, len(proposal.Candidates))
 }
 
 func (psm *PreSelectionManager) handleVote(vote *PreSelectionVote) {
 	payload := fmt.Sprintf("VOTE|%s|%s|%t", vote.ProposalID, vote.Voter, vote.Approved)
 	if !verifyPayloadSignature(payload, vote.Signature, vote.Voter) {
-		log.Printf("[PreSelection] Invalid signature on vote from %s", vote.Voter[:8])
+		log.Printf("[PreSelection] Invalid signature on vote from %s", safeTruncate(vote.Voter, 8))
 		return
 	}
 
@@ -401,7 +409,7 @@ func (psm *PreSelectionManager) handleVote(vote *PreSelectionVote) {
 	state.mu.Unlock()
 
 	log.Printf("[PreSelection] Received vote from %s on %s: %t",
-		vote.Voter[:8], vote.ProposalID[:8], vote.Approved)
+		safeTruncate(vote.Voter, 8), safeTruncate(vote.ProposalID, 8), vote.Approved)
 }
 
 func (psm *PreSelectionManager) broadcastToAddresses(addresses []string, msg string) {

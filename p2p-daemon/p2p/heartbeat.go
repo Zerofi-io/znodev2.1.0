@@ -448,3 +448,14 @@ func (hm *HeartbeatManager) GetPeerPresence() map[string]*PeerPresence {
 	}
 	return result
 }
+
+// GetPeerIDForAddress returns the peer ID for an Ethereum address from recent heartbeats
+func (hm *HeartbeatManager) GetPeerIDForAddress(address string) string {
+	address = strings.ToLower(address)
+	hm.mu.RLock()
+	defer hm.mu.RUnlock()
+	if presence, ok := hm.recentPeers[address]; ok {
+		return presence.PeerID
+	}
+	return ""
+}

@@ -1391,19 +1391,31 @@ func (h *Host) GetPBFTManager() *PBFTManager {
 }
 
 
-// getPeerIDForAddress returns the peer ID for an Ethereum address from cluster bindings
+// getPeerIDForAddress returns the peer ID for an Ethereum address
+// Checks cluster bindings first, then heartbeat data
 func (h *Host) getPeerIDForAddress(address string) string {
 	address = strings.ToLower(address)
+	
+	// Check cluster bindings first
 	h.mu.RLock()
-	defer h.mu.RUnlock()
 	for _, cs := range h.clusters {
 		cs.mu.RLock()
 		if peerID, ok := cs.PeerBindings[address]; ok {
 			cs.mu.RUnlock()
+			h.mu.RUnlock()
 			return peerID
 		}
 		cs.mu.RUnlock()
 	}
+	h.mu.RUnlock()
+
+	// Check heartbeat manager for recent peer info
+	if h.heartbeat != nil {
+		if peerID := h.heartbeat.GetPeerIDForAddress(address); peerID != "" {
+			return peerID
+		}
+	}
+
 	return ""
 }
 
