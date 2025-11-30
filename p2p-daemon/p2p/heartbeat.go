@@ -203,7 +203,7 @@ func (hm *HeartbeatManager) signHeartbeat(timestamp int64, nonce string) (string
 		},
 		PrimaryType: "Heartbeat",
 		Domain: apitypes.TypedDataDomain{
-			Name:              "ZNodeStaking",
+			Name:              "ZFIStaking",
 			Version:           "1",
 			ChainId:           math.NewHexOrDecimal256(config.ChainID),
 			VerifyingContract: config.StakingAddress,
@@ -339,7 +339,7 @@ func (hm *HeartbeatManager) verifyHeartbeat(msg *HeartbeatMessage) bool {
 		},
 		PrimaryType: "Heartbeat",
 		Domain: apitypes.TypedDataDomain{
-			Name:              "ZNodeStaking",
+			Name:              "ZFIStaking",
 			Version:           "1",
 			ChainId:           math.NewHexOrDecimal256(config.ChainID),
 			VerifyingContract: config.StakingAddress,
