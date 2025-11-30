@@ -63,7 +63,8 @@ export function startHeartbeatLoop(node, DRY_RUN) {
       node._heartbeatFailures++;
 
       if (node._heartbeatFailures >= 3) {
-        const backoffMs = Math.min(60000 * Math.pow(2, node._heartbeatFailures - 3), 3600000);
+        const exponent = Math.min(node._heartbeatFailures - 3, 6);
+        const backoffMs = Math.min(60000 * Math.pow(2, exponent), 3600000);
         node._heartbeatBackoffUntil = Date.now() + backoffMs;
         console.warn(
           `[Heartbeat] ${node._heartbeatFailures} consecutive failures, backing off for ${
@@ -146,7 +147,7 @@ export function startSlashingLoop(node, DRY_RUN) {
             if (balance < minGasWei) {
               continue;
             }
-          } catch {}
+          } catch (_ignored) {}
         }
 
         const tsArg = BigInt(tsSec);
@@ -254,7 +255,7 @@ export async function monitorNetwork(node, DRY_RUN) {
             const can = await node.registry.canParticipate(addr);
             if (!can) continue;
             candidates.push(addr);
-          } catch {}
+          } catch (_ignored) {}
         }
 
         if (page.length < maxScan) break;
@@ -284,7 +285,7 @@ export async function monitorNetwork(node, DRY_RUN) {
           if (p2pFiltered.length >= clusterSize) {
             candidates = p2pFiltered;
           }
-        } catch {}
+        } catch (_ignored) {}
       }
 
       let epochSeed = ethers.ZeroHash;
@@ -295,7 +296,7 @@ export async function monitorNetwork(node, DRY_RUN) {
         const epochSpan = Number.isFinite(parsedSpan) && parsedSpan > 0 ? parsedSpan : 20;
         const epoch = (Number(blockNumber) / epochSpan) | 0;
         epochSeed = ethers.keccak256(ethers.solidityPacked(['uint256'], [epoch]));
-      } catch {}
+      } catch (_ignored) {}
 
       const uniqueCandidates = [...new Set(candidates.map((a) => a.toLowerCase()))];
       if (uniqueCandidates.length < clusterSize) {
@@ -339,7 +340,7 @@ export async function monitorNetwork(node, DRY_RUN) {
         if (finalized) {
           return null;
         }
-      } catch {}
+      } catch (_ignored) {}
 
       return { members, clusterId };
     } catch (e) {
@@ -388,7 +389,7 @@ export async function monitorNetwork(node, DRY_RUN) {
       ) {
         try {
           node.logClusterHealth();
-        } catch {}
+        } catch (_ignored) {}
         node._lastHealthLogTs = Date.now();
       }
 
@@ -549,7 +550,7 @@ export async function monitorNetwork(node, DRY_RUN) {
                 eligible.push(addr);
                 eligibleSet.add(addrLower);
               }
-            } catch {}
+            } catch (_ignored) {}
           }
           offset += maxScan;
         }
@@ -851,7 +852,7 @@ export async function monitorNetwork(node, DRY_RUN) {
             if (node.p2p && node.p2p.roundData && node.p2p.roundData.has(liveKeyInitial)) {
               node.p2p.roundData.delete(liveKeyInitial);
             }
-          } catch {}
+          } catch (_ignored) {}
         }
       } finally {
         node._orchestrationMutex.release();

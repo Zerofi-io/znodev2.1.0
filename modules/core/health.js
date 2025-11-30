@@ -22,7 +22,7 @@ export async function checkSelfStakeHealth(node) {
     if (Array.isArray(info) && info.length >= 1) {
       try {
         stakedAmt = BigInt(info[0]);
-      } catch {}
+      } catch (_ignored) {}
     }
 
     if (stakedAmt === undefined || stakedAmt === null) {
@@ -263,7 +263,7 @@ async function findOtherLiveCluster(node, currentClusterId, clusterThreshold) {
         if (canParticipate) {
           eligibleNodes.push(addr);
         }
-      } catch {}
+      } catch (_ignored) {}
     }
 
     if (eligibleNodes.length < clusterSize) {
@@ -323,7 +323,7 @@ async function findOtherLiveCluster(node, currentClusterId, clusterThreshold) {
                 onlineCount += 1;
               }
             }
-          } catch {}
+          } catch (_ignored) {}
         }
 
         if (onlineCount >= clusterThreshold + 1) {
@@ -335,7 +335,7 @@ async function findOtherLiveCluster(node, currentClusterId, clusterThreshold) {
             members,
           });
         }
-      } catch {}
+      } catch (_ignored) {}
     }
 
     if (clusterCandidates.length === 0) {

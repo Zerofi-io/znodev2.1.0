@@ -382,10 +382,11 @@ class ZNode {
     };
   }
 
-  _loadClusterBlacklist() {
+  async _loadClusterBlacklist() {
     try {
-      if (fs.existsSync(this._clusterBlacklistPath)) {
-        const data = fs.readFileSync(this._clusterBlacklistPath, 'utf8');
+      const exists = await fs.promises.access(this._clusterBlacklistPath).then(() => true).catch(() => false);
+      if (exists) {
+        const data = await fs.promises.readFile(this._clusterBlacklistPath, 'utf8');
         const parsed = JSON.parse(data);
         this._clusterFailures = new Map(Object.entries(parsed.failures || {}));
         this._clusterFailMeta = parsed.meta || {};
@@ -492,8 +493,8 @@ class ZNode {
           );
           return true;
         }
-      } catch {}
-    } catch {}
+      } catch (_ignored) {}
+    } catch (_ignored) {}
 
     const digest = computeRoundDigest(payloads);
     const info = {
@@ -551,7 +552,7 @@ class ZNode {
       );
 
       gasLimit = (est * 12n) / 10n;
-    } catch {}
+    } catch (_ignored) {}
 
     const fee = await this.provider.getFeeData();
 
@@ -733,7 +734,7 @@ class ZNode {
     console.log('═══════════════════════════════════════════════\n');
     console.log(`Address: ${this.wallet.address}`);
 
-    this._loadClusterBlacklist();
+    await this._loadClusterBlacklist();
 
     const network = await this.provider.getNetwork();
     const chainIdBigInt = network.chainId;
@@ -1131,7 +1132,7 @@ class ZNode {
                 const passDir = path.dirname(passFile);
                 try {
                   fs.mkdirSync(passDir, { recursive: true, mode: 0o700 });
-                } catch {}
+                } catch (_ignored) {}
 
                 if (!backupPass) {
                   if (fs.existsSync(passFile)) {
@@ -1228,9 +1229,9 @@ class ZNode {
       await this._walletMutex.withLock(async () => {
         try {
           await this._moneroRawCall('close_wallet', {}, 180000);
-        } catch {}
+        } catch (_ignored) {}
       });
-    } catch {}
+    } catch (_ignored) {}
 
     const lines = ['set enable-multisig-experimental 1', this.moneroPassword, 'set', 'exit'];
     const input = lines.join('\n') + '\n';
@@ -1459,7 +1460,7 @@ class ZNode {
     try {
       try {
         await this.monero.closeWallet();
-      } catch {}
+      } catch (_ignored) {}
       await this.monero.createWallet(attemptWallet, this.moneroPassword);
       console.log(`[MoneroAttempt] Created attempt wallet: ${attemptWallet}`);
     } catch (e) {
@@ -1517,7 +1518,7 @@ class ZNode {
       );
       try {
         await this.monero.closeWallet();
-      } catch {}
+      } catch (_ignored) {}
       await this._deleteWalletFiles(this.currentAttemptWallet);
       this.currentAttemptWallet = null;
     }
@@ -1539,7 +1540,7 @@ class ZNode {
       );
       try {
         await this.monero.closeWallet();
-      } catch {}
+      } catch (_ignored) {}
       await new Promise((r) => setTimeout(r, 500));
       const suffix = Math.floor(Date.now() / 1000)
         .toString(36)
@@ -1595,7 +1596,7 @@ class ZNode {
       try {
         try {
           await this.monero.closeWallet();
-        } catch {}
+        } catch (_ignored) {}
 
         try {
           const entries = await fs.promises.readdir(walletDir, {
@@ -1690,16 +1691,16 @@ class ZNode {
           ) {
             await this.monero.closeWallet();
           }
-        } catch {}
+        } catch (_ignored) {}
 
         try {
           await fs.promises.unlink(path.join(walletDir, walletFile));
           console.log(`[Cluster] Deleted cluster wallet file: ${walletFile}`);
-        } catch {}
+        } catch (_ignored) {}
         try {
           await fs.promises.unlink(path.join(walletDir, `${walletFile}.keys`));
           console.log(`[Cluster] Deleted cluster wallet keys file: ${walletFile}.keys`);
-        } catch {}
+        } catch (_ignored) {}
 
         try {
           const entries = await fs.promises.readdir(backupDir, {
@@ -1811,7 +1812,7 @@ class ZNode {
         try {
           try {
             await this.monero.closeWallet();
-          } catch {}
+          } catch (_ignored) {}
           await new Promise((r) => setTimeout(r, 500));
 
           const canonicalBase =
@@ -1844,7 +1845,7 @@ class ZNode {
                 const passDir = path.dirname(passFile);
                 try {
                   fs.mkdirSync(passDir, { recursive: true, mode: 0o700 });
-                } catch {}
+                } catch (_ignored) {}
 
                 if (!backupPass) {
                   if (fs.existsSync(passFile)) {
@@ -1945,7 +1946,7 @@ class ZNode {
           );
           try {
             await this.monero.closeWallet();
-          } catch {}
+          } catch (_ignored) {}
           await new Promise((r) => setTimeout(r, 500));
 
           const suffix = Math.floor(Date.now() / 1000)
@@ -2153,7 +2154,7 @@ class ZNode {
           '[MoneroConfig] Local wallet for this attempt:',
           this.currentAttemptWallet || this.baseWalletName || '(unset)',
         );
-      } catch {}
+      } catch (_ignored) {}
 
       const moneroConfigData = JSON.stringify({
         members: canonicalMembers.map((a) => (a || '').toLowerCase()),
@@ -2475,7 +2476,7 @@ class ZNode {
             : this.baseWalletName;
         this.clusterWalletName = currentWallet;
         console.log('[Cluster] Active cluster wallet file:', this.clusterWalletName || '(unknown)');
-      } catch {}
+      } catch (_ignored) {}
 
       this._clusterFinalAddress = finalAddr;
       this._clusterFinalizationStartAt = Date.now();
@@ -2614,7 +2615,7 @@ class ZNode {
             return `#${idx}:${h}`;
           });
           console.log(`  ↳ Partial peer payload hashes (round ${prevRound}): ${hashes.join(', ')}`);
-        } catch {}
+        } catch (_ignored) {}
 
         return {
           success: false,
@@ -2650,7 +2651,7 @@ class ZNode {
             lastPeerPayloads: peersPrev,
           };
         }
-      } catch {}
+      } catch (_ignored) {}
 
       let preKexHash = null;
       try {
@@ -2719,7 +2720,7 @@ class ZNode {
           '  [INFO] Pre-KEX base wallet for this node:',
           this.baseWalletName || '(unset)',
         );
-      } catch {}
+      } catch (_ignored) {}
 
       let myPayload = '';
       try {
@@ -3130,8 +3131,8 @@ class ZNode {
         const health = this.moneroHealth || MoneroHealth.HEALTHY;
         console.log(`  Monero health: ${health}`);
         console.log('  Monero error counts:', JSON.stringify(this.moneroErrorCounts || {}));
-      } catch {}
-    } catch {}
+      } catch (_ignored) {}
+    } catch (_ignored) {}
   }
 }
 

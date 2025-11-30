@@ -49,9 +49,10 @@ export function startBridgeAPI(node) {
     rateInfo.count += 1;
     node._apiRateLimits.set(clientIP, rateInfo);
 
-    if (node._apiRateLimits.size > 1000) {
+    if (node._apiRateLimits.size > 500) {
+      const cutoff = now - rateLimitWindowMs;
       for (const [ip, info] of node._apiRateLimits) {
-        if (now - info.windowStart > rateLimitWindowMs) {
+        if (info.windowStart < cutoff) {
           node._apiRateLimits.delete(ip);
         }
       }
@@ -78,12 +79,28 @@ export function startBridgeAPI(node) {
     console.log(`[BridgeAPI] HTTP API server listening on port ${port}`);
   });
 
+  if (!node._apiRateLimitCleanupTimer) {
+    node._apiRateLimitCleanupTimer = setInterval(() => {
+      if (!node._apiRateLimits) return;
+      const cutoff = Date.now() - rateLimitWindowMs;
+      for (const [ip, info] of node._apiRateLimits) {
+        if (info.windowStart < cutoff) {
+          node._apiRateLimits.delete(ip);
+        }
+      }
+    }, 60000);
+  }
+
   node._apiServer.on('error', (e) => {
     console.log('[BridgeAPI] Server error:', e.message || String(e));
   });
 }
 
 export function stopBridgeAPI(node) {
+  if (node._apiRateLimitCleanupTimer) {
+    clearInterval(node._apiRateLimitCleanupTimer);
+    node._apiRateLimitCleanupTimer = null;
+  }
   if (node._apiServer) {
     node._apiServer.close();
     node._apiServer = null;
@@ -264,7 +281,7 @@ function getBridgeStatePath() {
   const dataDir = process.env.BRIDGE_DATA_DIR || path.join(homeDir, '.znode-bridge');
   try {
     fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  } catch {}
+  } catch (_ignored) {}
   return path.join(dataDir, 'bridge_state.json');
 }
 
@@ -454,7 +471,7 @@ async function checkForDeposits(node, minConfirmations) {
 
   try {
     await node.monero.refresh();
-  } catch {}
+  } catch (_ignored) {}
 
   let deposits;
   try {
@@ -533,7 +550,7 @@ function parseRecipientFromPaymentId(node, paymentId) {
   if (candidate.length === 42 && candidate.startsWith('0x')) {
     try {
       return ethers.getAddress(candidate);
-    } catch {}
+    } catch (_ignored) {}
   }
 
   if (node._pendingDepositRequests && node._pendingDepositRequests.has(paymentId)) {
@@ -733,7 +750,7 @@ export function stopWithdrawalMonitor(node) {
   if (node.bridge) {
     try {
       node.bridge.removeAllListeners('TokensBurned');
-    } catch {}
+    } catch (_ignored) {}
   }
   console.log('[Withdrawal] Withdrawal monitor stopped');
 }

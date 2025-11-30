@@ -126,43 +126,6 @@ class MoneroRPC {
     }
   }
 
-  async _postWithDigestAuth(url, uri, body, axiosConfig) {
-    const initialResponse = await axios.post(url, body, {
-      ...axiosConfig,
-      headers: { 'Content-Type': 'application/json' },
-      validateStatus: (status) => status === 401 || (status >= 200 && status < 300),
-    });
-
-    if (initialResponse.status !== 401) {
-      return initialResponse;
-    }
-
-    const wwwAuth =
-      initialResponse.headers['www-authenticate'] || initialResponse.headers['WWW-Authenticate'];
-    if (!wwwAuth || !/^digest\s+/i.test(wwwAuth)) {
-      throw new Error('HTTP 401: Unauthorized');
-    }
-
-    const challenge = this._parseDigestChallenge(wwwAuth);
-    const authHeader = this._buildDigestAuthHeader(challenge, {
-      method: 'POST',
-      uri,
-      username: this.user,
-      password: this.password,
-    });
-
-    const response = await axios.post(url, body, {
-      ...axiosConfig,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: authHeader,
-      },
-      validateStatus: (status) => status < 500,
-    });
-
-    return response;
-  }
-
   _parseDigestChallenge(header) {
     const prefix = /^digest\s+/i;
     const value = header.replace(prefix, '');

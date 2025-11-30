@@ -45,7 +45,7 @@ export default class P2PDaemonClient extends EventEmitter {
       }
       try {
         reject(err);
-      } catch {}
+      } catch (_ignored) {}
     }
     this.pendingRequests.clear();
   }
