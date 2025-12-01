@@ -695,6 +695,8 @@ class ZNode {
       '0x0000000000000000000000000000000000000000000000000000000000000000';
     console.log('[Cluster] Waiting for on-chain finalization (direct poll)');
     const startedAt = Date.now();
+    const jitterMs = Math.floor(Math.random() * 5000);
+    await new Promise((r) => setTimeout(r, jitterMs));
     while (Date.now() - startedAt < timeoutMs) {
       try {
         if (this.p2p && this._activeClusterId) {
