@@ -366,24 +366,15 @@ class ConfigValidator {
   }
 
   validateEmergencySweepConfig() {
-    const MONERO_BASE58_CHARS = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-
-    if (process.env.RECOVERY_SWEEP_ADDRESS) {
-      const addr = process.env.RECOVERY_SWEEP_ADDRESS;
-
-      const isValidLength = addr.length === 95 || addr.length === 106;
-      const isValidPrefix = addr.startsWith('4') || addr.startsWith('8');
-      const isValidChars = [...addr].every((c) => MONERO_BASE58_CHARS.includes(c));
-
-      if (!isValidLength || !isValidPrefix || !isValidChars) {
+    const sweepCoordinatorUrl = process.env.SWEEP_COORDINATOR_URL;
+    if (sweepCoordinatorUrl) {
+      const url = sweepCoordinatorUrl;
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
         this.errors.push(
-          `Invalid RECOVERY_SWEEP_ADDRESS: must be a valid Monero address (95 or 106 chars, starts with 4 or 8, base58 charset)`,
+          `Invalid SWEEP_COORDINATOR_URL: must start with http:// or https:// (got: ${url})`,
         );
       }
-    } else if (process.env.ENABLE_EMERGENCY_SWEEP === '1') {
-      this.errors.push('ENABLE_EMERGENCY_SWEEP is enabled but RECOVERY_SWEEP_ADDRESS is not set');
     }
-
     if (process.env.SWEEP_OFFLINE_MS) {
       const val = Number(process.env.SWEEP_OFFLINE_MS);
       if (isNaN(val) || val < 0) {
@@ -396,7 +387,6 @@ class ConfigValidator {
         );
       }
     }
-
     if (process.env.MAX_AUTO_WALLET_RESETS) {
       const val = Number(process.env.MAX_AUTO_WALLET_RESETS);
       if (isNaN(val) || val < 0 || !Number.isInteger(val)) {

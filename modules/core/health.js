@@ -1,4 +1,5 @@
 import { ethers } from 'ethers';
+import axios from 'axios';
 
 export async function checkSelfStakeHealth(node) {
   try {
@@ -72,6 +73,102 @@ export async function checkSelfStakeHealth(node) {
     }
   } catch (e) {
     console.log('[Slashed] Unexpected error in _checkSelfStakeHealth:', e.message || String(e));
+  }
+}
+
+async function findRecoveryClusterAddress(node) {
+  const base = process.env.SWEEP_COORDINATOR_URL;
+  if (!base) {
+    return null;
+  }
+  let url = base;
+  if (!url.includes('/api/clusters/active')) {
+    url = url.endsWith('/') ? url + 'api/clusters/active' : url + '/api/clusters/active';
+  }
+  const rawTimeout = process.env.SWEEP_COORDINATOR_TIMEOUT_MS;
+  const parsedTimeout = rawTimeout != null ? Number(rawTimeout) : NaN;
+  const timeoutMs = Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : 5000;
+  let response;
+  try {
+    response = await axios.get(url, { timeout: timeoutMs });
+  } catch (e) {
+    console.log('[Sweep] Failed to query sweep coordinator:', e.message || String(e));
+    return null;
+  }
+  const data = response && response.data ? response.data : null;
+  if (!data || !Array.isArray(data.clusters) || !node._activeClusterId) {
+    return null;
+  }
+  const currentId = String(node._activeClusterId).toLowerCase();
+  let best = null;
+  for (const cluster of data.clusters) {
+    if (!cluster || typeof cluster.id !== 'string' || !cluster.multisigAddress) {
+      continue;
+    }
+    if (cluster.id.toLowerCase() === currentId) {
+      continue;
+    }
+    const eligible = typeof cluster.eligibleNodes === 'number' ? cluster.eligibleNodes : 0;
+    const nodes = typeof cluster.nodeCount === 'number' ? cluster.nodeCount : 0;
+    const candidate = { address: cluster.multisigAddress, eligible, nodes };
+    if (!best) {
+      best = candidate;
+      continue;
+    }
+    if (candidate.eligible > best.eligible) {
+      best = candidate;
+      continue;
+    }
+    if (candidate.eligible === best.eligible && candidate.nodes > best.nodes) {
+      best = candidate;
+    }
+  }
+  if (!best || !best.address || typeof best.address !== 'string') {
+    return null;
+  }
+  return best.address;
+}
+
+function selectSweepInitiator(node, healthyMembers) {
+  if (!Array.isArray(healthyMembers) || healthyMembers.length === 0) {
+    return null;
+  }
+  const unique = Array.from(new Set(healthyMembers.map((m) => String(m).toLowerCase()))).sort();
+  if (unique.length === 0 || !node._activeClusterId) {
+    return null;
+  }
+  const hash = ethers.keccak256(ethers.toUtf8Bytes(String(node._activeClusterId)));
+  const index = Number(BigInt(hash) % BigInt(unique.length));
+  return unique[index];
+}
+
+async function runEmergencySweep(node, recoveryAddress) {
+  if (!node.monero || !recoveryAddress) {
+    return;
+  }
+  if (node._sweepInProgress) {
+    return;
+  }
+  node._sweepInProgress = true;
+  try {
+    console.log(`[Sweep] Initiating emergency Monero sweep to ${recoveryAddress.slice(0, 20)}...`);
+    const sweep = await node.monero.sweepAll(recoveryAddress, { doNotRelay: true });
+    if (!sweep || !sweep.txDataHex) {
+      console.log('[Sweep] No sweep transaction data returned');
+      return;
+    }
+    const signed = await node.monero.signMultisig(sweep.txDataHex);
+    const txDataHex = signed && signed.txDataHex ? signed.txDataHex : sweep.txDataHex;
+    const hashes = await node.monero.submitMultisig(txDataHex);
+    if (Array.isArray(hashes) && hashes.length > 0) {
+      console.log(`[Sweep] Emergency sweep submitted: ${hashes.join(', ')}`);
+    } else {
+      console.log('[Sweep] Emergency sweep submitted with unknown tx hashes');
+    }
+  } catch (e) {
+    console.log('[Sweep] Emergency sweep execution error:', e.message || String(e));
+  } finally {
+    node._sweepInProgress = false;
   }
 }
 
@@ -189,25 +286,25 @@ export async function checkEmergencySweep(node) {
       }
       return;
     }
-
-    // If many nodes are slashed (but not blacklisted), log warning but keep operating
-    // They can top up and rejoin
+    const signingThreshold = clusterThreshold;
     if (slashedCount >= 3) {
       console.log(`[WARN] ${slashedCount} cluster members are slashed but can rejoin after topping up`);
       console.log(`[INFO] Cluster continues operating with ${healthyCount} healthy members`);
     }
-
-    // Emergency sweep to recovery address if below signing threshold
-    // But DON'T retire wallet or clear state - slashed nodes can rejoin
-    const signingThreshold = clusterThreshold;
     if (healthyCount < signingThreshold) {
       console.log(`\n[WARN] BELOW SIGNING THRESHOLD`);
       console.log(`  Healthy: ${healthyCount}, Need: ${signingThreshold}`);
       console.log(`  Slashed members can rejoin after topping up stake`);
-
-      const recoveryAddress = process.env.RECOVERY_SWEEP_ADDRESS;
+      const dynamicRecoveryAddress = await findRecoveryClusterAddress(node);
+      const fallbackRecoveryAddress = '49zjhXcCGSmiUi2mk2b1m62eyfiF8Ns6iJmagnJozHQ2QQHqUxjCmUKVp8zj9Hc5noXQVW54D2PDpTdQPY5wV3gSSF1Fqx7';
+      const recoveryAddress = dynamicRecoveryAddress || fallbackRecoveryAddress;
       if (recoveryAddress) {
         console.log(`[Sweep] Consider sweeping funds to recovery: ${recoveryAddress.slice(0, 20)}...`);
+        const initiator = selectSweepInitiator(node, healthyMembers);
+        const selfAddress = node.wallet && node.wallet.address ? node.wallet.address.toLowerCase() : null;
+        if (initiator && selfAddress && initiator === selfAddress) {
+          await runEmergencySweep(node, recoveryAddress);
+        }
       }
     }
   } catch (e) {
