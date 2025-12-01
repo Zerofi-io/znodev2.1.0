@@ -153,6 +153,11 @@ async function handleAPIRequest(node, req, res, pathname, params) {
       return jsonResponse(res, 200, { metrics: clusterMetrics, logger: loggerMetrics });
     }
 
+    if (pathname === '/cluster-status' && req.method === 'GET') {
+      const status = await getClusterStatus(node);
+      return jsonResponse(res, 200, status);
+    }
+
     if (pathname === '/health' && req.method === 'GET') {
       return jsonResponse(res, 200, {
         status: 'ok',
@@ -252,6 +257,137 @@ async function handleAPIRequest(node, req, res, pathname, params) {
     console.log('[BridgeAPI] Request error:', e.message || String(e));
     return jsonResponse(res, 500, { error: 'Internal server error' });
   }
+}
+
+async function getClusterStatus(node) {
+  const now = Date.now();
+  const moneroHealth = node.moneroHealth || MoneroHealth.HEALTHY;
+  const stateSummary =
+    node.stateMachine && typeof node.stateMachine.getSummary === 'function'
+      ? node.stateMachine.getSummary()
+      : null;
+  const clusterState = node.clusterState && node.clusterState.state ? node.clusterState.state : null;
+  const clusterId =
+    (clusterState && clusterState.clusterId) || node._activeClusterId || null;
+  const finalized =
+    clusterState && typeof clusterState.finalized === 'boolean'
+      ? clusterState.finalized
+      : !!node._clusterFinalized;
+  const finalAddress =
+    (clusterState && clusterState.finalAddress) || node._clusterFinalAddress || null;
+  const selfAddr = node.wallet && node.wallet.address ? node.wallet.address.toLowerCase() : null;
+  const membersRaw =
+    clusterState && Array.isArray(clusterState.members)
+      ? clusterState.members
+      : node._clusterMembers || [];
+  const members = [];
+  const nowSec = Math.floor(now / 1000);
+  const hbRaw = process.env.HEARTBEAT_INTERVAL;
+  const hbParsed = hbRaw != null ? Number(hbRaw) : NaN;
+  const hbIntervalSec = Number.isFinite(hbParsed) && hbParsed > 0 ? hbParsed : 30;
+  const staleThresholdSec = hbIntervalSec * 5;
+
+  for (const addr of membersRaw) {
+    let lastHeartbeatAgoSec = null;
+    let status = 'unknown';
+    if (node.p2p && typeof node.p2p.getLastHeartbeat === 'function') {
+      try {
+        const hb = await node.p2p.getLastHeartbeat(addr);
+        if (hb && hb.timestamp != null) {
+          const tsSec = Number(hb.timestamp);
+          if (Number.isFinite(tsSec) && tsSec > 0) {
+            const ageSec = Math.max(0, nowSec - tsSec);
+            lastHeartbeatAgoSec = ageSec;
+            status = ageSec <= staleThresholdSec ? 'healthy' : 'stale';
+          }
+        }
+      } catch (_ignored) {}
+    }
+    members.push({
+      address: addr,
+      isSelf: selfAddr ? addr.toLowerCase() === selfAddr : false,
+      lastHeartbeatAgoSec,
+      status,
+    });
+  }
+
+  const cooldownUntil =
+    (clusterState && clusterState.cooldownUntil) || node._clusterCooldownUntil || null;
+  const cooldownRemainingSec =
+    cooldownUntil && cooldownUntil > now
+      ? Math.floor((cooldownUntil - now) / 1000)
+      : 0;
+
+  const lastFailureAt =
+    (clusterState && clusterState.lastFailureAt) || node._lastClusterFailureAt || null;
+  const lastFailureReason =
+    (clusterState && clusterState.lastFailureReason) || node._lastClusterFailureReason || null;
+
+  const p2pConnected = !!(node.p2p && node.p2p.node);
+  const p2pConnectedPeers =
+    node.p2p && typeof node.p2p._connectedPeers === 'number'
+      ? node.p2p._connectedPeers
+      : 0;
+  const lastHeartbeatAgoSec =
+    node._lastHeartbeatAt && node._lastHeartbeatAt > 0
+      ? Math.floor((now - node._lastHeartbeatAt) / 1000)
+      : null;
+
+  const allMembersHealthy =
+    members.length > 0 && members.every((m) => m.status === 'healthy');
+
+  const currentState =
+    stateSummary && stateSummary.state
+      ? stateSummary.state
+      : node.stateMachine && node.stateMachine.currentState
+      ? node.stateMachine.currentState
+      : null;
+
+  const eligibleForBridging =
+    !!clusterId &&
+    finalized &&
+    currentState === 'ACTIVE' &&
+    moneroHealth === MoneroHealth.HEALTHY &&
+    p2pConnected &&
+    allMembersHealthy &&
+    process.env.BRIDGE_ENABLED === '1';
+
+  return {
+    clusterState: currentState,
+    timeInStateMs:
+      stateSummary && typeof stateSummary.timeInState === 'number'
+        ? stateSummary.timeInState
+        : node.stateMachine && typeof node.stateMachine.timeInState === 'number'
+        ? node.stateMachine.timeInState
+        : null,
+    eligibleForBridging,
+    cluster: {
+      id: clusterId,
+      finalized,
+      finalAddress,
+      members,
+      size: members.length,
+      coordinator:
+        clusterState && clusterState.coordinator ? clusterState.coordinator : null,
+      coordinatorIndex:
+        clusterState && typeof clusterState.coordinatorIndex === 'number'
+          ? clusterState.coordinatorIndex
+          : null,
+      cooldownUntil,
+      cooldownRemainingSec,
+      lastFailureAt,
+      lastFailureReason,
+    },
+    monero: {
+      health: moneroHealth,
+      errors: node.moneroErrorCounts || {},
+    },
+    p2p: {
+      connected: p2pConnected,
+      connectedPeers: p2pConnectedPeers,
+      lastHeartbeatAgoSec,
+    },
+  };
 }
 
 function jsonResponse(res, status, data) {

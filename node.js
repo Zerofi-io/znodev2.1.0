@@ -482,9 +482,8 @@ class ZNode {
 
   _saveClusterState() {
     try {
-      const snapshot = this.clusterState && typeof this.clusterState.state === 'function'
-        ? this.clusterState.state
-        : null;
+      const snapshot =
+        this.clusterState && this.clusterState.state ? this.clusterState.state : null;
       if (!snapshot || !snapshot.clusterId || !snapshot.finalized) {
         return;
       }
