@@ -416,6 +416,34 @@ export async function monitorNetwork(node, DRY_RUN) {
     }
   };
 
+  async function computeP2POnlineCountForEligible(node, eligible, clusterSize) {
+    let p2pOnlineCount = 0;
+    if (node.p2p && typeof node.p2p.getQueuePeers === 'function' && eligible.length > 0) {
+      try {
+        const selfAddr = node.wallet.address.toLowerCase();
+        const recent = await node.p2p.getQueuePeers();
+        const addrSet = new Set(recent.map((a) => a.toLowerCase()));
+        addrSet.add(selfAddr);
+        for (const addr of eligible) {
+          if (addrSet.has(addr.toLowerCase())) {
+            p2pOnlineCount += 1;
+          }
+        }
+      } catch {
+        const selfAddr = node.wallet.address.toLowerCase();
+        if (eligible.some((a) => a.toLowerCase() === selfAddr)) {
+          p2pOnlineCount = 1;
+        }
+      }
+    } else if (eligible.length > 0) {
+      const selfAddr = node.wallet.address.toLowerCase();
+      if (eligible.some((a) => a.toLowerCase() === selfAddr)) {
+        p2pOnlineCount = 1;
+      }
+    }
+    return p2pOnlineCount;
+  }
+
   const loop = async () => {
     if (node._monitorLoopRunning) {
       return;
@@ -686,44 +714,51 @@ export async function monitorNetwork(node, DRY_RUN) {
           console.log('Online Members in Queue (on-chain): 0/0');
         }
 
-        let p2pOnlineCount = 0;
-        if (node.p2p && typeof node.p2p.getQueuePeers === 'function' && eligible.length > 0) {
-          try {
-            const selfAddr = node.wallet.address.toLowerCase();
-            const recent = await node.p2p.getQueuePeers();
-            const addrSet = new Set(recent.map((a) => a.toLowerCase()));
-            addrSet.add(selfAddr);
-            for (const addr of eligible) {
-              if (addrSet.has(addr.toLowerCase())) {
-                p2pOnlineCount++;
-              }
-            }
-          } catch {
-            const selfAddr = node.wallet.address.toLowerCase();
-            if (eligible.some((a) => a.toLowerCase() === selfAddr)) {
-              p2pOnlineCount = 1;
-            }
-          }
-        } else if (eligible.length > 0) {
-          const selfAddr = node.wallet.address.toLowerCase();
-          if (eligible.some((a) => a.toLowerCase() === selfAddr)) {
-            p2pOnlineCount = 1;
-          }
-        }
-
-        if (eligible.length > 0) {
-          console.log('P2P-Online Members in Queue: ' + p2pOnlineCount + '/' + eligible.length);
-        } else {
-          console.log('P2P-Online Members in Queue: 0/0');
-        }
-
         const minP2PVisibility = Number(process.env.MIN_P2P_VISIBILITY || clusterSize);
+        const attemptsRaw = process.env.LIVENESS_ATTEMPTS;
+        const attemptsParsed = attemptsRaw != null ? Number(attemptsRaw) : NaN;
+        const maxAttempts =
+          Number.isFinite(attemptsParsed) && attemptsParsed > 0 ? Math.floor(attemptsParsed) : 3;
 
-        if (p2pOnlineCount < minP2PVisibility) {
-          console.log(
-            `  [WARN] P2P visibility too low (${p2pOnlineCount}/${minP2PVisibility}); waiting for more peers...`,
-          );
-          return;
+        const intervalRaw = process.env.LIVENESS_ATTEMPT_INTERVAL_MS;
+        const intervalParsed = intervalRaw != null ? Number(intervalRaw) : NaN;
+        const attemptIntervalMs =
+          Number.isFinite(intervalParsed) && intervalParsed >= 0 ? intervalParsed : 30000;
+
+        let p2pOnlineCount = 0;
+        let attempt = 1;
+        while (true) {
+          p2pOnlineCount = await computeP2POnlineCountForEligible(node, eligible, clusterSize);
+
+          if (eligible.length > 0) {
+            console.log(
+              `P2P-Online Members in Queue (attempt ${attempt}/${maxAttempts}): ${p2pOnlineCount}/${eligible.length}`,
+            );
+          } else {
+            console.log('P2P-Online Members in Queue: 0/0');
+          }
+
+          if (p2pOnlineCount >= minP2PVisibility) {
+            break;
+          }
+
+          if (attempt >= maxAttempts) {
+            console.log(
+              `  [WARN] P2P visibility too low (${p2pOnlineCount}/${minP2PVisibility}) after ${maxAttempts} liveness attempts; waiting for next monitor loop...`,
+            );
+            return;
+          }
+
+          if (attemptIntervalMs > 0) {
+            console.log(
+              `[Cluster] Liveness attempt ${attempt}/${maxAttempts} incomplete; waiting ${
+                attemptIntervalMs / 1000
+              }s before retry...`,
+            );
+            await new Promise((r) => setTimeout(r, attemptIntervalMs));
+          }
+
+          attempt += 1;
         }
       } catch (e) {
         console.log('Queue status log error:', e.message || String(e));
@@ -826,6 +861,18 @@ export async function monitorNetwork(node, DRY_RUN) {
         return;
       }
 
+      const warmupRaw = process.env.P2P_WARMUP_MS;
+      const warmupParsed = warmupRaw != null ? Number(warmupRaw) : NaN;
+      const warmupMs =
+        Number.isFinite(warmupParsed) && warmupParsed >= 0 ? warmupParsed : 30000;
+      if (warmupMs > 0) {
+        const warmupSec = Math.floor(warmupMs / 1000);
+        console.log(
+          `[Cluster] P2P warm-up: waiting ${warmupSec}s for mesh to stabilize before liveness...`,
+        );
+        await new Promise((r) => setTimeout(r, warmupMs));
+      }
+
       if (!node.p2p || !node.p2p.node) {
         console.log('[WARN] P2P not available for liveness check; skipping candidate cluster');
         return;
@@ -872,14 +919,21 @@ export async function monitorNetwork(node, DRY_RUN) {
 
         console.log('[INFO] Starting identity exchange (PBFT consensus will gate progress)...');
 
-        const identityTimeoutMs = Number(process.env.PBFT_IDENTITY_TIMEOUT_MS || 300000);
+        const readyRaw = process.env.READY_BARRIER_TIMEOUT_MS;
+        const readyParsed = readyRaw != null ? Number(readyRaw) : NaN;
+        const readyTimeoutMs =
+          Number.isFinite(readyParsed) && readyParsed > 0 ? readyParsed : 300000;
+
+        const identityTimeoutMs = Number(process.env.PBFT_IDENTITY_TIMEOUT_MS || readyTimeoutMs);
         const identityPromise = node.p2p.waitForIdentities(clusterId, members, identityTimeoutMs);
 
         const canonicalIdentityMembers = [...members].map((a) => (a || '').toLowerCase()).sort();
         const identityData = JSON.stringify(canonicalIdentityMembers);
 
         console.log(`[INFO] PBFT Consensus: waiting for all ${clusterSize} nodes to be ready...`);
-        const identityConsensusTimeout = Number(process.env.PBFT_IDENTITY_TIMEOUT_MS || 300000);
+        const identityConsensusTimeout = Number(
+          process.env.PBFT_IDENTITY_TIMEOUT_MS || readyTimeoutMs,
+        );
         let identityConsensus;
         try {
           identityConsensus = await node.p2p.runConsensus(
