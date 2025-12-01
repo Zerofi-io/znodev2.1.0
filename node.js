@@ -2389,7 +2389,7 @@ class ZNode {
       if (this._coordMonitorFailed) return;
 
       try {
-        if (this.p2p && this._activeClusterId && this._sessionId) {
+        if (this.p2p && this._activeClusterId) {
           const r9999 = await this.p2p.getRoundData(this._activeClusterId, this._sessionId || 'coord', 9999);
           for (const payload of Object.values(r9999 || {})) {
             try {
