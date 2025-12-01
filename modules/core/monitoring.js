@@ -526,7 +526,7 @@ export async function monitorNetwork(node, DRY_RUN) {
                     }
                     if (data.type === 'cluster-finalized' && data.clusterId) {
                       const clusterInfo = await node.registry.clusters(data.clusterId);
-                      const onChainFinalized = clusterInfo && clusterInfo[2];
+                      const onChainFinalized = clusterInfo && clusterInfo[3];
                       if (!onChainFinalized) {
                         continue;
                       }
@@ -534,7 +534,7 @@ export async function monitorNetwork(node, DRY_RUN) {
                       try {
                         membersOnChain = await node.registry.getClusterMembers(data.clusterId);
                       } catch (e) {}
-                      const moneroAddress = clusterInfo && clusterInfo[0];
+                      const moneroAddress = clusterInfo && clusterInfo[1];
                       if (typeof node._onClusterFinalized === 'function') {
                         console.log('[Cluster] Finalization confirmed on-chain via coordinator broadcast');
                         node._onClusterFinalized(data.clusterId, membersOnChain, moneroAddress);
@@ -583,7 +583,7 @@ export async function monitorNetwork(node, DRY_RUN) {
                   );
                   try {
                     const clusterInfo = await node.registry.clusters(node._activeClusterId);
-                    const alreadyFinalized = clusterInfo && clusterInfo[2];
+                    const alreadyFinalized = clusterInfo && clusterInfo[3];
                     if (alreadyFinalized) {
                       console.log(
                         '  [INFO]  Cluster already finalized by another node; skipping failover',
