@@ -1022,6 +1022,9 @@ class ZNode {
   async _cleanupClusterAttempt(clusterId) {
     if (!this.p2p) return;
 
+    this._stopCoordinatorHeartbeat();
+    this._stopCoordinatorMonitor();
+
     try {
       if (typeof this.p2p.leaveCluster === 'function') {
         await this.p2p.leaveCluster(clusterId);
