@@ -546,7 +546,7 @@ export async function monitorNetwork(node, DRY_RUN) {
                   );
                   try {
                     const clusterInfo = await node.registry.clusters(node._activeClusterId);
-                    const alreadyFinalized = clusterInfo && clusterInfo[3];
+                    const alreadyFinalized = clusterInfo && clusterInfo[2];
                     if (alreadyFinalized) {
                       console.log(
                         '  [INFO]  Cluster already finalized by another node; skipping failover',

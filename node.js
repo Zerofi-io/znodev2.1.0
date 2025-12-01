@@ -558,48 +558,36 @@ class ZNode {
   async _recoverClusterFromChain() {
     try {
       console.log('[Cluster] No state file found, checking on-chain for existing cluster membership...');
-      
-      // Check if this node is in a cluster on-chain
       const myAddress = this.wallet.address;
       const clusterId = await this.registry.nodeToCluster(myAddress);
-      
-      // Zero bytes32 means not in a cluster
       if (!clusterId || clusterId === '0x0000000000000000000000000000000000000000000000000000000000000000') {
         console.log('[Cluster] Node is not in any cluster on-chain');
         return false;
       }
-      
       console.log('[Cluster] Found on-chain cluster:', clusterId.slice(0, 18) + '...');
-      
-      // Get cluster details
       const isActive = await this.registry.isClusterActive(clusterId);
       if (!isActive) {
         console.log('[Cluster] On-chain cluster is not active');
         return false;
       }
-      
-      // Get cluster members and Monero address
       const members = await this.registry.getClusterMembers(clusterId);
-      // Get monero address and finalized flag from clusters()
       const clusterData = await this.registry.clusters(clusterId);
       const moneroAddress = clusterData[0];
       const finalized = clusterData[2];
-      
       if (!finalized) {
         console.log('[Cluster] On-chain cluster is not finalized');
         return false;
       }
-      
-      // Find existing wallet file
-      const walletDir = process.env.MONERO_WALLET_DIR || 
-        (process.env.HOME ? path.join(process.env.HOME, '.monero-wallets') : path.join(process.cwd(), '.monero-wallets'));
+      const walletDir =
+        process.env.MONERO_WALLET_DIR ||
+        (process.env.HOME
+          ? path.join(process.env.HOME, '.monero-wallets')
+          : path.join(process.cwd(), '.monero-wallets'));
       const shortEth = myAddress.slice(2, 10);
-      
-      // Look for wallet files matching pattern znode_att_{shortEth}_*
       let walletName = null;
       try {
         const files = fs.readdirSync(walletDir);
-        const pattern = new RegExp(`^znode_att_${shortEth}_[a-fA-F0-9]{8}_\\d{2}\\.keys$`, 'i');
+        const pattern = new RegExp(`^znode_att_${shortEth}_[a-fA-F0-9]{8}_\d{2}\.keys$`, 'i');
         for (const file of files) {
           if (pattern.test(file)) {
             walletName = file.replace('.keys', '');
@@ -607,28 +595,21 @@ class ZNode {
           }
         }
       } catch (e) {
-        console.log('[Cluster] Could not scan wallet directory:', e.message);
+        console.log('[Cluster] Could not scan wallet directory:', e.message || String(e));
       }
-      
       if (!walletName) {
         console.log('[Cluster] No matching wallet file found for recovery');
         return false;
       }
-      
-      // Restore state
       this._activeClusterId = clusterId;
       this._clusterMembers = Array.from(members);
       this._clusterFinalAddress = moneroAddress;
       this._clusterFinalized = true;
       this.clusterWalletName = walletName;
-      
       if (this.p2p && typeof this.p2p.setActiveCluster === 'function') {
         this.p2p.setActiveCluster(clusterId);
       }
-      
-      // Save the state so we don't need to recover again
       this._saveClusterState();
-      
       console.log('[Cluster] Recovered finalized cluster from on-chain data');
       console.log('  ClusterId: ' + clusterId.slice(0, 18) + '...');
       console.log('  Monero address: ' + moneroAddress.slice(0, 24) + '...');
@@ -639,6 +620,61 @@ class ZNode {
       console.log('[Cluster] Failed to recover cluster from chain:', e.message || String(e));
       return false;
     }
+  }
+
+  async _waitForOnChainFinalizationForSelf(expectedMoneroAddress, fallbackMembers) {
+    if (!this.registry || !this.wallet) {
+      return false;
+    }
+    const timeoutRaw = process.env.FINALIZE_ONCHAIN_TIMEOUT_MS;
+    const timeoutParsed = timeoutRaw != null ? Number(timeoutRaw) : NaN;
+    const timeoutMs =
+      Number.isFinite(timeoutParsed) && timeoutParsed > 0 ? timeoutParsed : 5 * 60 * 1000;
+    const pollRaw = process.env.FINALIZE_ONCHAIN_POLL_MS;
+    const pollParsed = pollRaw != null ? Number(pollRaw) : NaN;
+    const pollMs =
+      Number.isFinite(pollParsed) && pollParsed > 0 ? pollParsed : 10 * 1000;
+    const selfAddress = this.wallet.address;
+    const zeroCluster =
+      '0x0000000000000000000000000000000000000000000000000000000000000000';
+    console.log('[Cluster] Waiting for on-chain finalization (direct poll)');
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      try {
+        const clusterId = await this.registry.nodeToCluster(selfAddress);
+        if (clusterId && clusterId !== zeroCluster) {
+          const info = await this.registry.clusters(clusterId);
+          const moneroAddress = info && info[0];
+          const finalized = info && info[2];
+          if (finalized && moneroAddress) {
+            if (expectedMoneroAddress && moneroAddress !== expectedMoneroAddress) {
+              console.log(
+                '[Cluster] On-chain cluster finalized but Monero address mismatch; continuing to poll',
+              );
+            } else {
+              let membersOnChain = null;
+              try {
+                membersOnChain = await this.registry.getClusterMembers(clusterId);
+              } catch (_e) {}
+              console.log('[Cluster] Finalization confirmed on-chain (direct poll)');
+              this._onClusterFinalized(
+                clusterId,
+                Array.isArray(membersOnChain) && membersOnChain.length
+                  ? membersOnChain
+                  : fallbackMembers,
+                moneroAddress,
+              );
+              return true;
+            }
+          }
+        }
+      } catch (e) {
+        console.log('[Cluster] Finalization poll error:', e.message || String(e));
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+    console.log('[Cluster] Finalization not detected on-chain within timeout window');
+    return false;
   }
 
   _onClusterFinalized(clusterId, members, finalAddress) {
@@ -2839,6 +2875,14 @@ class ZNode {
         }
       } else {
         console.log('[INFO] Waiting for coordinator to finalize cluster on-chain...');
+        try {
+          await this._waitForOnChainFinalizationForSelf(finalAddr, canonicalMembers);
+        } catch (e) {
+          console.log(
+            '[Cluster] Error while waiting for on-chain finalization:',
+            e.message || String(e),
+          );
+        }
       }
       return true;
     } catch (e) {
