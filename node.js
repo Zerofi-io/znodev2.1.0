@@ -458,6 +458,7 @@ class ZNode {
   }
 
 
+
   _getClusterStatePath() {
     return path.join(__dirname, '.cluster-state.json');
   }
@@ -639,6 +640,54 @@ class ZNode {
       return false;
     }
   }
+
+  _onClusterFinalized(clusterId, members, finalAddress) {
+    const effectiveClusterId = clusterId || this._activeClusterId;
+    if (!effectiveClusterId) {
+      return;
+    }
+    const wasFinalized = this._clusterFinalized;
+    if (Array.isArray(members) && members.length) {
+      this._clusterMembers = members;
+    }
+    if (finalAddress) {
+      this._clusterFinalAddress = finalAddress;
+    }
+    this._activeClusterId = effectiveClusterId;
+    this._clusterFinalized = true;
+    if (!this._clusterFinalizedAt) {
+      this._clusterFinalizedAt = Date.now();
+    }
+    if (this.p2p && typeof this.p2p.setActiveCluster === 'function') {
+      this.p2p.setActiveCluster(effectiveClusterId);
+    }
+    if (typeof this._saveClusterState === 'function') {
+      this._saveClusterState();
+    }
+    if (wasFinalized && this._clusterFinalizedAt) {
+      return;
+    }
+    console.log('[OK] Cluster finalized on-chain');
+    try {
+      this.startDepositMonitor();
+    } catch (e) {
+      console.log('[Bridge] Failed to start deposit monitor:', e.message || String(e));
+    }
+    try {
+      this.startBridgeAPI();
+    } catch (e) {
+      console.log('[BridgeAPI] Failed to start API server:', e.message || String(e));
+    }
+    try {
+      this.startWithdrawalMonitor();
+    } catch (e) {
+      console.log('[Withdrawal] Failed to start withdrawal monitor:', e.message || String(e));
+    }
+    if (this.stateMachine && typeof this.stateMachine.transition === 'function') {
+      this.stateMachine.transition('ACTIVE', { clusterId: effectiveClusterId }, 'cluster finalized');
+    }
+  }
+
 
   async _withRetry(fn, options = {}) {
     return withRetry(fn, {
@@ -1024,22 +1073,9 @@ class ZNode {
         }
       }
       if (this._clusterFinalized) {
-        console.log('[Cluster] Resuming active cluster, starting monitors...');
-        this.stateMachine.transition('ACTIVE', { clusterId: this._activeClusterId }, 'restored from on-chain');
-        try {
-          await this.startDepositMonitor();
-        } catch (e) {
-          console.log('[Bridge] Failed to start deposit monitor:', e.message || String(e));
-        }
-        try {
-          this.startBridgeAPI();
-        } catch (e) {
-          console.log('[BridgeAPI] Failed to start API:', e.message || String(e));
-        }
-        try {
-          await this.startWithdrawalMonitor();
-        } catch (e) {
-          console.log('[Withdrawal] Failed to start withdrawal monitor:', e.message || String(e));
+        console.log('[Cluster] Resuming active cluster from restored state');
+        if (typeof this._onClusterFinalized === 'function') {
+          this._onClusterFinalized(this._activeClusterId, this._clusterMembers, this._clusterFinalAddress);
         }
       } else {
         await this.monitorNetwork();
@@ -2276,31 +2312,8 @@ class ZNode {
   }
 
   _handleCoordinatorHeartbeat(data) {
-    if (!data || !data.type) return;
-
-    if (data.type === 'coord-alive') {
+    if (data && data.type === 'coord-alive') {
       this._lastCoordHeartbeatReceived = Date.now();
-    } else if (data.type === 'cluster-finalized' && data.clusterId) {
-      if (this._clusterFinalized) return;
-      this._verifyAndSetFinalized(data.clusterId);
-    }
-  }
-
-  async _verifyAndSetFinalized(clusterId) {
-    try {
-      const isFinalized = await this.isClusterFinalized(clusterId);
-      if (!isFinalized) {
-        console.log('[Cluster] On-chain verification failed, cluster not finalized');
-        return;
-      }
-      console.log('[Cluster] Finalization confirmed on-chain');
-      this._clusterFinalized = true;
-      this._clusterFinalizedAt = Date.now();
-      if (typeof this._saveClusterState === 'function') {
-        this._saveClusterState();
-      }
-    } catch (e) {
-      console.log('[Cluster] Failed to verify finalization:', e.message);
     }
   }
 
@@ -2674,7 +2687,7 @@ class ZNode {
           }
           if (retries > 1) {
             console.log(
-              `  ⏳ Multisig not ready yet, waiting ${finalizeDelayMs}ms before retry (${retries - 1} retries left)...`,
+              `  [INFO] Multisig not ready yet, waiting ${finalizeDelayMs}ms before retry (${retries - 1} retries left)...`,
             );
             await new Promise((resolve) => setTimeout(resolve, finalizeDelayMs));
           }
@@ -2743,6 +2756,7 @@ class ZNode {
             if (alreadyFinalized) {
               console.log('[OK] Cluster already finalized on-chain (by another coordinator)');
               finalized = true;
+              this._onClusterFinalized(clusterId, canonicalMembers, finalAddr);
               break;
             }
 
@@ -2758,7 +2772,6 @@ class ZNode {
               console.log('[OK] Cluster finalized on-chain (v3)');
               finalized = true;
 
-              // Broadcast finalization to other nodes
               if (this.p2p) {
                 try {
                   await this.p2p.broadcastRoundData(
@@ -2778,6 +2791,8 @@ class ZNode {
                   console.log('[Coordinator] Failed to broadcast finalization:', e.message);
                 }
               }
+
+              this._onClusterFinalized(clusterId, canonicalMembers, finalAddr);
             }
           } catch (e) {
             const msg = e && e.message ? e.message : String(e);
@@ -2785,6 +2800,7 @@ class ZNode {
             if (/already finalized|already exists|cluster.*finalized/i.test(msg)) {
               console.log('[OK] Cluster already finalized on-chain (race condition handled)');
               finalized = true;
+              this._onClusterFinalized(clusterId, canonicalMembers, finalAddr);
               break;
             }
 
@@ -2807,6 +2823,7 @@ class ZNode {
             if (nowFinalized) {
               console.log('[OK] Cluster finalized despite error (transaction succeeded)');
               finalized = true;
+              this._onClusterFinalized(clusterId, canonicalMembers, finalAddr);
               break;
             }
 
@@ -2821,7 +2838,7 @@ class ZNode {
           }
         }
       } else {
-        console.log('⏳ Waiting for coordinator to finalize cluster on-chain...');
+        console.log('[INFO] Waiting for coordinator to finalize cluster on-chain...');
       }
       return true;
     } catch (e) {

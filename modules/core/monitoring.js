@@ -469,40 +469,11 @@ export async function monitorNetwork(node, DRY_RUN) {
           const info = await node.registry.clusters(node._activeClusterId);
           const finalized = info && info[3];
           if (finalized) {
-            if (!node._clusterFinalized) {
-              console.log('[OK] Cluster finalized on-chain');
-              node._clusterFinalizedAt = Date.now();
-
-              try {
-                node.startDepositMonitor();
-              } catch (e) {
-                console.log('[Bridge] Failed to start deposit monitor:', e.message || String(e));
-              }
-
-              try {
-                node.startBridgeAPI();
-              } catch (e) {
-                console.log('[BridgeAPI] Failed to start API server:', e.message || String(e));
-              }
-
-              try {
-                node.startWithdrawalMonitor();
-              } catch (e) {
-                console.log(
-                  '[Withdrawal] Failed to start withdrawal monitor:',
-                  e.message || String(e),
-                );
-              }
+            const membersOnChain = info && info[0];
+            const moneroAddress = info && info[1];
+            if (typeof node._onClusterFinalized === 'function') {
+              node._onClusterFinalized(node._activeClusterId, membersOnChain, moneroAddress);
             }
-            node._clusterFinalized = true;
-            if (typeof node._saveClusterState === 'function') {
-              node._saveClusterState();
-            }
-            node.stateMachine.transition(
-              'ACTIVE',
-              { clusterId: node._activeClusterId },
-              'cluster finalized',
-            );
           } else {
             if (!node._clusterFinalized && node.p2p && node._sessionId) {
               try {
@@ -510,15 +481,22 @@ export async function monitorNetwork(node, DRY_RUN) {
                 for (const payload of Object.values(r9999 || {})) {
                   try {
                     const data = JSON.parse(payload);
+                    if (typeof node._handleCoordinatorHeartbeat === 'function') {
+                      node._handleCoordinatorHeartbeat(data);
+                    }
                     if (data.type === 'cluster-finalized' && data.clusterId) {
-                      const isFinalized = await node.isClusterFinalized(data.clusterId);
-                      if (isFinalized) {
-                        console.log('[Cluster] Finalization confirmed on-chain via coordinator broadcast');
-                        node._clusterFinalized = true;
-                        node._clusterFinalizedAt = Date.now();
-                        if (typeof node._saveClusterState === 'function') node._saveClusterState();
-                        break;
+                      const clusterInfo = await node.registry.clusters(data.clusterId);
+                      const onChainFinalized = clusterInfo && clusterInfo[3];
+                      if (!onChainFinalized) {
+                        continue;
                       }
+                      const membersOnChain = clusterInfo && clusterInfo[0];
+                      const moneroAddress = clusterInfo && clusterInfo[1];
+                      if (typeof node._onClusterFinalized === 'function') {
+                        console.log('[Cluster] Finalization confirmed on-chain via coordinator broadcast');
+                        node._onClusterFinalized(data.clusterId, membersOnChain, moneroAddress);
+                      }
+                      break;
                     }
                   } catch (e) {}
                 }
