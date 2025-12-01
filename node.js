@@ -481,14 +481,15 @@ class ZNode {
   }
 
   _saveClusterState() {
-    if (!this._activeClusterId || !this._clusterFinalized) {
-      return;
-    }
     try {
+      const snapshot = this.clusterState && typeof this.clusterState.state === 'function'
+        ? this.clusterState.state
+        : null;
+      if (!snapshot || !snapshot.clusterId || !snapshot.finalized) {
+        return;
+      }
       const state = {
-        clusterId: this._activeClusterId,
-        members: this._clusterMembers,
-        finalAddress: this._clusterFinalAddress,
+        ...snapshot,
         walletName: this.clusterWalletName,
         savedAt: Date.now(),
       };
@@ -504,6 +505,9 @@ class ZNode {
 
   _clearClusterState() {
     try {
+      if (this.clusterState && typeof this.clusterState.reset === 'function') {
+        this.clusterState.reset();
+      }
       const statePath = this._getClusterStatePath();
       if (fs.existsSync(statePath)) {
         fs.unlinkSync(statePath);
@@ -541,30 +545,37 @@ class ZNode {
         this._clearClusterState();
         return false;
       }
-      if (onChainAddress !== state.finalAddress) {
+      if (!onChainAddress || onChainAddress !== state.finalAddress) {
         console.log('[Cluster] Cluster address mismatch, clearing state');
         this._clearClusterState();
         return false;
       }
       const myAddress = this.wallet.address.toLowerCase();
-      const memberAddresses = (onChainMembers || []).map(a => a.toLowerCase());
+      const memberAddresses = (onChainMembers || []).map((a) => a.toLowerCase());
       if (!memberAddresses.includes(myAddress)) {
         console.log('[Cluster] Not a member of saved cluster, clearing state');
         this._clearClusterState();
         return false;
       }
-      this._activeClusterId = state.clusterId;
-      this._clusterMembers = state.members;
-      this._clusterFinalAddress = state.finalAddress;
-      this._clusterFinalized = true;
+      const effectiveMembers = Array.isArray(onChainMembers) && onChainMembers.length
+        ? onChainMembers
+        : state.members;
       this.clusterWalletName = state.walletName;
+      if (this.clusterState && typeof this.clusterState.update === 'function') {
+        this.clusterState.update({
+          clusterId: state.clusterId,
+          members: effectiveMembers,
+          finalAddress: onChainAddress,
+          finalized: true,
+        });
+      }
       if (this.p2p && typeof this.p2p.setActiveCluster === 'function') {
         this.p2p.setActiveCluster(state.clusterId);
       }
       console.log('[Cluster] Restored finalized cluster from on-chain state');
       console.log('  ClusterId: ' + state.clusterId.slice(0, 18) + '...');
-      console.log('  Monero address: ' + state.finalAddress.slice(0, 24) + '...');
-      console.log('  Members: ' + state.members.length);
+      console.log('  Monero address: ' + onChainAddress.slice(0, 24) + '...');
+      console.log('  Members: ' + effectiveMembers.length);
       return true;
     } catch (e) {
       console.log('[Cluster] Failed to verify cluster on-chain:', e.message || String(e));
@@ -618,11 +629,15 @@ class ZNode {
         console.log('[Cluster] No matching wallet file found for recovery');
         return false;
       }
-      this._activeClusterId = clusterId;
-      this._clusterMembers = Array.from(members);
-      this._clusterFinalAddress = moneroAddress;
-      this._clusterFinalized = true;
       this.clusterWalletName = walletName;
+      if (this.clusterState && typeof this.clusterState.update === 'function') {
+        this.clusterState.update({
+          clusterId,
+          members: Array.from(members),
+          finalAddress: moneroAddress,
+          finalized: true,
+        });
+      }
       if (this.p2p && typeof this.p2p.setActiveCluster === 'function') {
         this.p2p.setActiveCluster(clusterId);
       }
@@ -699,15 +714,20 @@ class ZNode {
     if (!effectiveClusterId) {
       return;
     }
-    const wasFinalized = this._clusterFinalized;
-    if (Array.isArray(members) && members.length) {
-      this._clusterMembers = members;
+    const wasFinalized = this.clusterState ? this.clusterState.finalized : this._clusterFinalized;
+    if (this.clusterState && typeof this.clusterState.update === 'function') {
+      const updates = { clusterId: effectiveClusterId };
+      if (Array.isArray(members) && members.length) {
+        updates.members = members;
+      }
+      if (finalAddress) {
+        updates.finalAddress = finalAddress;
+      }
+      this.clusterState.update(updates);
+      if (typeof this.clusterState.setFinalized === 'function') {
+        this.clusterState.setFinalized();
+      }
     }
-    if (finalAddress) {
-      this._clusterFinalAddress = finalAddress;
-    }
-    this._activeClusterId = effectiveClusterId;
-    this._clusterFinalized = true;
     if (!this._clusterFinalizedAt) {
       this._clusterFinalizedAt = Date.now();
     }
@@ -1013,7 +1033,9 @@ class ZNode {
       );
     }
 
-    this._pendingR3 = null;
+    if (this.clusterState && typeof this.clusterState.setPendingR3 === 'function') {
+      this.clusterState.setPendingR3(null);
+    }
   }
 
   async start() {
@@ -1118,10 +1140,6 @@ class ZNode {
           console.log('[Cluster] Opened cluster wallet: ' + this.clusterWalletName);
         } catch (e) {
           console.log('[Cluster] Failed to open cluster wallet:', e.message || String(e));
-          this._activeClusterId = null;
-          this._clusterMembers = null;
-          this._clusterFinalAddress = null;
-          this._clusterFinalized = false;
           this._clearClusterState();
         }
       }
@@ -1809,7 +1827,9 @@ class ZNode {
     }
 
     this.multisigInfo = null;
-    this._pendingR3 = null;
+    if (this.clusterState && typeof this.clusterState.setPendingR3 === 'function') {
+      this.clusterState.setPendingR3(null);
+    }
 
     return true;
   }
@@ -1936,7 +1956,9 @@ class ZNode {
         this.baseWalletName =
           process.env.MONERO_WALLET_NAME || `znode_${this.wallet.address.slice(2, 10)}`;
         this.multisigInfo = null;
-        this._pendingR3 = null;
+        if (this.clusterState && typeof this.clusterState.setPendingR3 === 'function') {
+          this.clusterState.setPendingR3(null);
+        }
 
         try {
           await this.monero.createWallet(this.baseWalletName, this.moneroPassword);
@@ -2628,9 +2650,11 @@ class ZNode {
         );
       }
       if (res && (res.multisig_info || res.multisigInfo)) {
-        this._pendingR3 = res.multisig_info || res.multisigInfo;
-      } else {
-        this._pendingR3 = '';
+        if (this.clusterState && typeof this.clusterState.setPendingR3 === 'function') {
+          this.clusterState.setPendingR3(res.multisig_info || res.multisigInfo);
+        }
+      } else if (this.clusterState && typeof this.clusterState.setPendingR3 === 'function') {
+        this.clusterState.setPendingR3('');
       }
 
       if (!this._pendingR3 || this._pendingR3.length === 0) {
@@ -2802,7 +2826,9 @@ class ZNode {
       } catch (_ignored) {}
 
       this._clusterFinalAddress = finalAddr;
-      this._clusterFinalizationStartAt = Date.now();
+      if (this.clusterState && typeof this.clusterState.update === 'function') {
+        this.clusterState.update({ finalAddress: finalAddr, finalizationStartAt: Date.now() });
+      }
 
       if (isCoordinator) {
         const jitterMs = Math.floor(Math.random() * 2000);

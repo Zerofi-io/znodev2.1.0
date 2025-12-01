@@ -583,7 +583,9 @@ export async function monitorNetwork(node, DRY_RUN) {
                       e2.message || String(e2),
                     );
                   } finally {
-                    node._clusterFailoverAttempted = true;
+                    if (node.clusterState && typeof node.clusterState.setFailoverAttempted === 'function') {
+                      node.clusterState.setFailoverAttempted();
+                    }
                   }
                 }
               }
@@ -595,11 +597,12 @@ export async function monitorNetwork(node, DRY_RUN) {
           node._clusterStatusErrorCount = (node._clusterStatusErrorCount || 0) + 1;
           if (node._clusterStatusErrorCount > 5) {
             console.log('[WARN] Repeated cluster status errors; resetting active cluster state');
-            node._activeClusterId = null;
+            if (node.clusterState && typeof node.clusterState.clearCluster === 'function') {
+              node.clusterState.clearCluster();
+            }
             if (node.p2p && typeof node.p2p.setActiveCluster === 'function') {
               node.p2p.setActiveCluster(null);
             }
-            node._clusterMembers = null;
             node._clusterStatusErrorCount = 0;
           }
         }
@@ -842,11 +845,12 @@ export async function monitorNetwork(node, DRY_RUN) {
 
       await node._orchestrationMutex.acquire();
       try {
-        node._activeClusterId = clusterId;
+        if (node.clusterState && typeof node.clusterState.setCluster === 'function') {
+          node.clusterState.setCluster(clusterId, members, ethers.getAddress(coordinator), myIndex);
+        }
         if (node.p2p && typeof node.p2p.setActiveCluster === 'function') {
           node.p2p.setActiveCluster(clusterId);
         }
-        node._clusterMembers = members;
 
         console.log('[INFO] Starting identity exchange (PBFT consensus will gate progress)...');
 
@@ -872,8 +876,9 @@ export async function monitorNetwork(node, DRY_RUN) {
           console.log(`[ERROR] PBFT "identity" consensus error: ${e.message || String(e)}`);
           console.log('[INFO] Cleaning up and will retry...');
           await node.p2p.leaveCluster(clusterId);
-          node._activeClusterId = null;
-          node._clusterMembers = null;
+          if (node.clusterState && typeof node.clusterState.clearCluster === 'function') {
+            node.clusterState.clearCluster();
+          }
           return;
         }
         if (!identityConsensus.success) {
@@ -882,8 +887,9 @@ export async function monitorNetwork(node, DRY_RUN) {
           );
           console.log('[INFO] Cleaning up and will retry...');
           await node.p2p.leaveCluster(clusterId);
-          node._activeClusterId = null;
-          node._clusterMembers = null;
+          if (node.clusterState && typeof node.clusterState.clearCluster === 'function') {
+            node.clusterState.clearCluster();
+          }
           return;
         }
         console.log(`[OK] PBFT identity consensus reached - all ${clusterSize}/${clusterSize} nodes ready\n`);
@@ -971,11 +977,12 @@ export async function monitorNetwork(node, DRY_RUN) {
               console.log(`[Dissolve] Error attempting stuck-cluster dissolution: ${msg}`);
             }
           }
-          node._activeClusterId = null;
+          if (node.clusterState && typeof node.clusterState.clearCluster === 'function') {
+            node.clusterState.clearCluster();
+          }
           if (node.p2p && typeof node.p2p.setActiveCluster === 'function') {
             node.p2p.setActiveCluster(null);
           }
-          node._clusterMembers = null;
           try {
             if (node.p2p && node.p2p.roundData && node.p2p.roundData.has(liveKeyInitial)) {
               node.p2p.roundData.delete(liveKeyInitial);

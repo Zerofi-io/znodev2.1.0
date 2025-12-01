@@ -180,12 +180,6 @@ export async function checkEmergencySweep(node) {
           if (typeof node._clearClusterState === 'function') {
             node._clearClusterState();
           }
-          node._activeClusterId = null;
-          node._clusterMembers = null;
-          node._clusterFinalAddress = null;
-          node._clusterFinalizationStartAt = null;
-          node._clusterFinalized = false;
-          node.clusterWalletName = null;
           if (node.p2p && typeof node.p2p.setActiveCluster === 'function') {
             node.p2p.setActiveCluster(null);
           }

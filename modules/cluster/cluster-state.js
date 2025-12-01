@@ -122,7 +122,6 @@ export class ClusterState extends EventEmitter {
       members: members ? [...members] : [],
       coordinator,
       coordinatorIndex,
-      finalizationStartAt: Date.now(),
     });
   }
 
