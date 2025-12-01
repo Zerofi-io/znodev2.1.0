@@ -225,6 +225,57 @@ export async function checkEmergencySweep(node) {
  * Attempt to dissolve a dead cluster on-chain.
  * Only called when 3+ members are BLACKLISTED (not just slashed).
  */
+export async function dissolveStuckFinalizedCluster(node, clusterId) {
+  if (!node || !node.registry || !clusterId) {
+    return false;
+  }
+  try {
+    const info = await node.registry.clusters(clusterId);
+    if (!info || !info[0]) {
+      return false;
+    }
+    const finalized = !!info[2];
+    if (!finalized) {
+      return false;
+    }
+    let isActive = true;
+    try {
+      isActive = await node.registry.isClusterActive(clusterId);
+    } catch (_ignored) {}
+    if (!isActive) {
+      return false;
+    }
+    try {
+      const estimatedGas = await node.registry.dissolveCluster.estimateGas(clusterId);
+      const balance = await node.provider.getBalance(node.wallet.address);
+      if (balance <= estimatedGas) {
+        console.log('[Dissolve] Insufficient gas balance to dissolve stuck cluster');
+        return false;
+      }
+    } catch (_ignored) {}
+    try {
+      const tx = await node.registry.dissolveCluster(clusterId);
+      console.log(`[Dissolve] Sent dissolveCluster for stuck cluster (tx: ${tx.hash})`);
+      const receipt = await tx.wait();
+      if (receipt && receipt.status === 1) {
+        console.log('[Dissolve] Stuck cluster dissolved on-chain');
+        return true;
+      }
+    } catch (e) {
+      const msg = e && e.message ? e.message : String(e);
+      if (msg.includes('already dissolved')) {
+        console.log('[Dissolve] Cluster already dissolved');
+        return true;
+      }
+      console.log(`[Dissolve] Failed to dissolve stuck cluster: ${msg}`);
+    }
+  } catch (e) {
+    const msg = e && e.message ? e.message : String(e);
+    console.log(`[Dissolve] Error checking stuck cluster state: ${msg}`);
+  }
+  return false;
+}
+
 async function attemptClusterDissolution(node, clusterId, healthyMembers) {
   if (!clusterId || !node.registry) {
     return;

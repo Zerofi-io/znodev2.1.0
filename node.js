@@ -112,7 +112,7 @@ import {
   getAllPendingWithdrawals,
   handleWithdrawalSignRequest,
 } from './modules/bridge/api.js';
-import { checkSelfStakeHealth, checkEmergencySweep } from './modules/core/health.js';
+import { checkSelfStakeHealth, checkEmergencySweep, dissolveStuckFinalizedCluster } from './modules/core/health.js';
 import { metrics } from './modules/core/metrics.js';
 
 const P2PExchange = P2PDaemonClient;
@@ -136,12 +136,29 @@ class ZNode {
     this.stateMachine.on('transition', ({ from, to, data }) => {
       metrics.onStateTransition(from, to, data);
     });
+
+    this.clusterState.on('stateChange', ({ newState }) => {
+      this._activeClusterId = newState.clusterId || null;
+      this._clusterMembers = newState.members || null;
+      this._clusterFinalAddress = newState.finalAddress || null;
+      this._clusterFinalized = !!newState.finalized;
+      this._pendingR3 = newState.pendingR3 || null;
+      this._clusterFinalizationStartAt = newState.finalizationStartAt || null;
+      this._clusterFailoverAttempted = !!newState.failoverAttempted;
+      this._clusterCooldownUntil = newState.cooldownUntil || null;
+      this._lastClusterFailureAt = newState.lastFailureAt || null;
+      this._lastClusterFailureReason = newState.lastFailureReason || null;
+    });
     this._clusterBlacklistPath = __dirname + '/.cluster-blacklist.json';
     this._clusterFailures = new Map();
     this._clusterFailMeta = {};
     this._clusterBlacklist = {};
     this._blacklistSavePending = false;
     this._blacklistSaveQueued = false;
+
+    this._clusterCooldownUntil = null;
+    this._lastClusterFailureAt = null;
+    this._lastClusterFailureReason = null;
 
     this.moneroPassword = process.env.MONERO_WALLET_PASSWORD;
 
@@ -2336,6 +2353,19 @@ class ZNode {
         console.log(
           `[WARN]  [CoordHB] Coordinator silent for ${Math.round(elapsed / 1000)}s (>${timeoutMs / 1000}s)`,
         );
+        try {
+          if (this.stateMachine && typeof this.stateMachine.fail === 'function') {
+            this.stateMachine.fail('coordinator_silent');
+          }
+          const cooldownMs = Number(process.env.CLUSTER_RETRY_COOLDOWN_MS || 300000);
+          const now = Date.now();
+          if (this.clusterState && typeof this.clusterState.setCooldownUntil === 'function') {
+            this.clusterState.setCooldownUntil(now + cooldownMs);
+            if (typeof this.clusterState.recordFailure === 'function') {
+              this.clusterState.recordFailure('coordinator_silent');
+            }
+          }
+        } catch (_ignored) {}
       }
     }, checkIntervalMs);
   }
@@ -3372,6 +3402,9 @@ class ZNode {
     return checkEmergencySweep(this);
   }
 
+  async dissolveStuckFinalizedCluster(clusterId) {
+    return dissolveStuckFinalizedCluster(this, clusterId);
+  }
 
   _updateEnv(key, value) {
     try {

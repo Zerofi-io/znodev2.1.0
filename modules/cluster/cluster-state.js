@@ -51,6 +51,9 @@ export class ClusterState extends EventEmitter {
       pendingR3: null,
       finalizationStartAt: null,
       failoverAttempted: false,
+      cooldownUntil: null,
+      lastFailureAt: null,
+      lastFailureReason: null,
     };
     this._version = 0;
   }
@@ -91,6 +94,16 @@ export class ClusterState extends EventEmitter {
     return this._state.failoverAttempted;
   }
 
+  get cooldownUntil() {
+    return this._state.cooldownUntil;
+  }
+  get lastFailureAt() {
+    return this._state.lastFailureAt;
+  }
+  get lastFailureReason() {
+    return this._state.lastFailureReason;
+  }
+
   update(changes) {
     const oldState = { ...this._state };
     Object.assign(this._state, changes);
@@ -129,6 +142,19 @@ export class ClusterState extends EventEmitter {
     this.update({ failoverAttempted: true });
   }
 
+  setCooldownUntil(timestamp) {
+    this.update({ cooldownUntil: timestamp });
+  }
+
+  recordFailure(reason) {
+    const now = Date.now();
+    this.update({ lastFailureAt: now, lastFailureReason: reason || null });
+  }
+
+  clearFailure() {
+    this.update({ lastFailureAt: null, lastFailureReason: null });
+  }
+
   hasActiveCluster() {
     return !!(this._state.clusterId && this._state.members && this._state.members.length > 0);
   }
@@ -144,6 +170,9 @@ export class ClusterState extends EventEmitter {
       pendingR3: null,
       finalizationStartAt: null,
       failoverAttempted: false,
+      cooldownUntil: null,
+      lastFailureAt: null,
+      lastFailureReason: null,
     });
   }
 

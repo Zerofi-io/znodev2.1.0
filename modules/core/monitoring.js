@@ -420,6 +420,15 @@ export async function monitorNetwork(node, DRY_RUN) {
     if (node._monitorLoopRunning) {
       return;
     }
+    if (!node._activeClusterId && node.clusterState && typeof node.clusterState.state === 'function') {
+      const state = node.clusterState.state;
+      const cooldownUntil = state.cooldownUntil || null;
+      if (cooldownUntil && Date.now() < cooldownUntil) {
+        const remainingSec = Math.ceil((cooldownUntil - Date.now()) / 1000);
+        console.log(`[Cluster] Cooldown active after failed attempt; next formation in ${remainingSec}s`);
+        return;
+      }
+    }
     node._monitorLoopRunning = true;
 
     try {
@@ -954,6 +963,14 @@ export async function monitorNetwork(node, DRY_RUN) {
               e.message || String(e),
             );
           }
+          if (isCoordinator && typeof node.dissolveStuckFinalizedCluster === 'function') {
+            try {
+              await node.dissolveStuckFinalizedCluster(clusterId);
+            } catch (e) {
+              const msg = e && e.message ? e.message : String(e);
+              console.log(`[Dissolve] Error attempting stuck-cluster dissolution: ${msg}`);
+            }
+          }
           node._activeClusterId = null;
           if (node.p2p && typeof node.p2p.setActiveCluster === 'function') {
             node.p2p.setActiveCluster(null);
@@ -962,6 +979,16 @@ export async function monitorNetwork(node, DRY_RUN) {
           try {
             if (node.p2p && node.p2p.roundData && node.p2p.roundData.has(liveKeyInitial)) {
               node.p2p.roundData.delete(liveKeyInitial);
+            }
+          } catch (_ignored) {}
+          try {
+            const cooldownMs = Number(process.env.CLUSTER_RETRY_COOLDOWN_MS || 300000);
+            const now = Date.now();
+            if (node.clusterState && typeof node.clusterState.setCooldownUntil === 'function') {
+              node.clusterState.setCooldownUntil(now + cooldownMs);
+              if (typeof node.clusterState.recordFailure === 'function') {
+                node.clusterState.recordFailure('multisig_failed');
+              }
             }
           } catch (_ignored) {}
         }
