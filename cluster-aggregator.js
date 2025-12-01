@@ -167,6 +167,23 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (method === 'GET' && u.pathname === '/api/clusters/active') {
+      const data = await aggregateClusters();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          clusters: data.clusters.map((c) => ({
+            id: c.id,
+            multisigAddress: c.finalAddress,
+            nodeCount: c.totalNodes,
+            eligibleNodes: c.eligibleNodes,
+            timestamp: data.timestamp,
+          })),
+        }),
+      );
+      return;
+    }
+
     if (method === 'GET' && u.pathname === '/healthz') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(

@@ -352,6 +352,35 @@ async function getClusterStatus(node) {
     allMembersHealthy &&
     process.env.BRIDGE_ENABLED === '1';
 
+  const syncMinVisibility = Number(process.env.MIN_P2P_VISIBILITY || members.length || 0);
+
+  const jitterRawEnv = process.env.NON_COORDINATOR_JITTER_MS;
+  const jitterParsedEnv = jitterRawEnv != null ? Number(jitterRawEnv) : NaN;
+  const nonCoordinatorJitterMs =
+    Number.isFinite(jitterParsedEnv) && jitterParsedEnv >= 0 ? jitterParsedEnv : 5000;
+
+  const warmupRawEnv = process.env.P2P_WARMUP_MS;
+  const warmupParsedEnv = warmupRawEnv != null ? Number(warmupRawEnv) : NaN;
+  const p2pWarmupMs =
+    Number.isFinite(warmupParsedEnv) && warmupParsedEnv >= 0 ? warmupParsedEnv : 30000;
+
+  const readyRawEnv = process.env.READY_BARRIER_TIMEOUT_MS;
+  const readyParsedEnv = readyRawEnv != null ? Number(readyRawEnv) : NaN;
+  const readyBarrierTimeoutMs =
+    Number.isFinite(readyParsedEnv) && readyParsedEnv > 0 ? readyParsedEnv : 300000;
+
+  const attemptsRawEnv = process.env.LIVENESS_ATTEMPTS;
+  const attemptsParsedEnv = attemptsRawEnv != null ? Number(attemptsRawEnv) : NaN;
+  const livenessAttempts =
+    Number.isFinite(attemptsParsedEnv) && attemptsParsedEnv > 0
+      ? Math.floor(attemptsParsedEnv)
+      : 3;
+
+  const intervalRawEnv = process.env.LIVENESS_ATTEMPT_INTERVAL_MS;
+  const intervalParsedEnv = intervalRawEnv != null ? Number(intervalRawEnv) : NaN;
+  const livenessAttemptIntervalMs =
+    Number.isFinite(intervalParsedEnv) && intervalParsedEnv >= 0 ? intervalParsedEnv : 30000;
+
   return {
     clusterState: currentState,
     timeInStateMs:
@@ -361,6 +390,14 @@ async function getClusterStatus(node) {
         ? node.stateMachine.timeInState
         : null,
     eligibleForBridging,
+    syncConfig: {
+      minP2PVisibility: syncMinVisibility,
+      nonCoordinatorJitterMs,
+      p2pWarmupMs,
+      readyBarrierTimeoutMs,
+      livenessAttempts,
+      livenessAttemptIntervalMs,
+    },
     cluster: {
       id: clusterId,
       finalized,

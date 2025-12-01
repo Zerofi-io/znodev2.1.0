@@ -258,6 +258,9 @@ class ConfigValidator {
       { name: 'FINALIZE_FAILOVER_MS', value: process.env.FINALIZE_FAILOVER_MS },
       { name: 'STALE_ROUND_MIN_AGE_MS', value: process.env.STALE_ROUND_MIN_AGE_MS },
       { name: 'P2P_MESSAGE_MAX_AGE_MS', value: process.env.P2P_MESSAGE_MAX_AGE_MS },
+      { name: 'READY_BARRIER_TIMEOUT_MS', value: process.env.READY_BARRIER_TIMEOUT_MS },
+      { name: 'P2P_WARMUP_MS', value: process.env.P2P_WARMUP_MS },
+      { name: 'LIVENESS_ATTEMPT_INTERVAL_MS', value: process.env.LIVENESS_ATTEMPT_INTERVAL_MS },
     ];
 
     for (const { name, value } of timeouts) {
@@ -266,6 +269,15 @@ class ConfigValidator {
         if (isNaN(num) || num < 0) {
           this.errors.push(`Invalid ${name}: ${value} (must be >= 0)`);
         }
+      }
+    }
+
+    if (process.env.LIVENESS_ATTEMPTS) {
+      const val = Number(process.env.LIVENESS_ATTEMPTS);
+      if (!Number.isFinite(val) || val <= 0 || !Number.isInteger(val)) {
+        this.errors.push(
+          `Invalid LIVENESS_ATTEMPTS: ${process.env.LIVENESS_ATTEMPTS} (must be a positive integer)`,
+        );
       }
     }
 
