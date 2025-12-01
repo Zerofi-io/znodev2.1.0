@@ -141,6 +141,8 @@ func (s *Server) dispatch(method string, params json.RawMessage) (interface{}, *
 		return s.handlers.BroadcastRoundData(params)
 	case "P2P.WaitForRoundCompletion":
 		return s.handlers.WaitForRoundCompletion(params)
+	case "P2P.GetRoundData":
+		return s.handlers.GetRoundData(params)
 	case "P2P.GetPeerPayloads":
 		return s.handlers.GetPeerPayloads(params)
 	case "P2P.BroadcastSignature":

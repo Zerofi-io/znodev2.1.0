@@ -965,3 +965,23 @@ func (h *Handlers) GetPreSelectionProposal(params json.RawMessage) (interface{},
 		"timestamp":   proposal.Timestamp,
 	}, nil
 }
+
+// GetRoundDataParams for P2P.GetRoundData
+type GetRoundDataParams struct {
+	ClusterID string `json:"clusterId"`
+	Round     int    `json:"round"`
+}
+
+// GetRoundDataResult for P2P.GetRoundData
+type GetRoundDataResult struct {
+	Data map[string]string `json:"data"`
+}
+
+func (h *Handlers) GetRoundData(params json.RawMessage) (interface{}, *Error) {
+	var p GetRoundDataParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, &Error{Code: -32602, Message: "Invalid params: " + err.Error()}
+	}
+	data := h.host.GetRoundData(p.ClusterID, p.Round)
+	return GetRoundDataResult{Data: data}, nil
+}

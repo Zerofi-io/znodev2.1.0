@@ -1424,3 +1424,22 @@ func (h *Host) getPeerIDForAddress(address string) string {
 func (h *Host) GetPreSelectionManager() *PreSelectionManager {
 	return h.presel
 }
+
+func (h *Host) GetRoundData(clusterID string, round int) map[string]string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	cs, ok := h.clusters[clusterID]
+	if !ok {
+		return nil
+	}
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	if cs.RoundData[round] == nil {
+		return nil
+	}
+	result := make(map[string]string)
+	for k, v := range cs.RoundData[round] {
+		result[k] = v
+	}
+	return result
+}

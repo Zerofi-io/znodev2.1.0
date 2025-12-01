@@ -504,6 +504,26 @@ export async function monitorNetwork(node, DRY_RUN) {
               'cluster finalized',
             );
           } else {
+            if (!node._clusterFinalized && node.p2p && node._sessionId) {
+              try {
+                const r9999 = await node.p2p.getRoundData(node._activeClusterId, node._sessionId, 9999);
+                for (const payload of Object.values(r9999 || {})) {
+                  try {
+                    const data = JSON.parse(payload);
+                    if (data.type === 'cluster-finalized' && data.clusterId) {
+                      const isFinalized = await node.isClusterFinalized(data.clusterId);
+                      if (isFinalized) {
+                        console.log('[Cluster] Finalization confirmed on-chain via coordinator broadcast');
+                        node._clusterFinalized = true;
+                        node._clusterFinalizedAt = Date.now();
+                        if (typeof node._saveClusterState === 'function') node._saveClusterState();
+                        break;
+                      }
+                    }
+                  } catch (e) {}
+                }
+              } catch (e) {}
+            }
             const failoverRaw = process.env.FINALIZE_FAILOVER_MS;
             const failoverParsed = failoverRaw != null ? Number(failoverRaw) : NaN;
             const failoverMs =

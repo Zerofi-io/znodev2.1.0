@@ -301,6 +301,15 @@ export default class P2PDaemonClient extends EventEmitter {
     });
   }
 
+  async getRoundData(clusterId, sessionId, round) {
+    const _topic = this.topic(clusterId, sessionId);
+    const result = await this.call('P2P.GetRoundData', {
+      clusterId: _topic,
+      round,
+    });
+    return result && result.data ? result.data : {};
+  }
+
   async waitForRoundCompletion(clusterId, sessionId, round, members, timeoutMs = 300000) {
     const _topic = this.topic(clusterId, sessionId);
     try {
