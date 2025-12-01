@@ -2276,8 +2276,18 @@ class ZNode {
   }
 
   _handleCoordinatorHeartbeat(data) {
-    if (data && data.type === 'coord-alive') {
+    if (!data || !data.type) return;
+
+    if (data.type === 'coord-alive') {
       this._lastCoordHeartbeatReceived = Date.now();
+    } else if (data.type === 'cluster-finalized') {
+      if (this._clusterFinalized) return;
+      console.log('[Cluster] Received finalization broadcast from coordinator');
+      this._clusterFinalized = true;
+      this._clusterFinalizedAt = Date.now();
+      if (typeof this._saveClusterState === 'function') {
+        this._saveClusterState();
+      }
     }
   }
 
@@ -2734,6 +2744,27 @@ class ZNode {
               await tx.wait();
               console.log('[OK] Cluster finalized on-chain (v3)');
               finalized = true;
+
+              // Broadcast finalization to other nodes
+              if (this.p2p) {
+                try {
+                  await this.p2p.broadcastRoundData(
+                    clusterId,
+                    this._sessionId || 'coord',
+                    9999,
+                    JSON.stringify({
+                      type: 'cluster-finalized',
+                      clusterId: clusterId,
+                      moneroAddress: finalAddr,
+                      members: canonicalMembers,
+                      timestamp: Date.now(),
+                    }),
+                  );
+                  console.log('[Coordinator] Broadcast finalization to cluster members');
+                } catch (e) {
+                  console.log('[Coordinator] Failed to broadcast finalization:', e.message);
+                }
+              }
             }
           } catch (e) {
             const msg = e && e.message ? e.message : String(e);
