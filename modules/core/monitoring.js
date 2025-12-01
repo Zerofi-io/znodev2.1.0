@@ -925,7 +925,7 @@ export async function monitorNetwork(node, DRY_RUN) {
           Number.isFinite(readyParsed) && readyParsed > 0 ? readyParsed : 300000;
 
         const identityTimeoutMs = Number(process.env.PBFT_IDENTITY_TIMEOUT_MS || readyTimeoutMs);
-        const identityPromise = node.p2p.waitForIdentities(clusterId, members, identityTimeoutMs);
+        const identityPromise = node.p2p.waitForIdentities(clusterId, members, identityTimeoutMs).catch(() => null);
 
         const canonicalIdentityMembers = [...members].map((a) => (a || '').toLowerCase()).sort();
         const identityData = JSON.stringify(canonicalIdentityMembers);
@@ -966,7 +966,7 @@ export async function monitorNetwork(node, DRY_RUN) {
         }
         console.log(`[OK] PBFT identity consensus reached - all ${clusterSize}/${clusterSize} nodes ready\n`);
 
-        const identityResult = await identityPromise.catch(() => null);
+        const identityResult = await identityPromise;
         if (!identityResult?.complete) {
           const bindings = await node.p2p.getPeerBindings(clusterId);
           const bindingCount = Object.keys(bindings || {}).length;
