@@ -156,7 +156,6 @@ class RPCManager {
           },
         );
       } catch (e) {
-        const msg = e && e.message ? e.message : String(e);
         const status = e && e.response && e.response.status;
         if (status === 401) {
           console.warn(
@@ -165,6 +164,20 @@ class RPCManager {
           clearInterval(this._timer);
           this._timer = null;
           return;
+        }
+        let msg = e && e.message ? e.message : '';
+        if (!msg && e && e.code) {
+          msg = String(e.code);
+        }
+        if (!msg && status) {
+          msg = `HTTP ${status}`;
+        }
+        if (!msg) {
+          try {
+            msg = JSON.stringify(e);
+          } catch {
+            msg = String(e);
+          }
         }
         console.error('[RPCManager] Monero RPC health check failed:', msg);
       }
