@@ -467,10 +467,13 @@ export async function monitorNetwork(node, DRY_RUN) {
       ) {
         try {
           const info = await node.registry.clusters(node._activeClusterId);
-          const finalized = info && info[3];
+          const finalized = info && info[2];
           if (finalized) {
-            const membersOnChain = info && info[0];
-            const moneroAddress = info && info[1];
+            const moneroAddress = info && info[0];
+            let membersOnChain = null;
+            try {
+              membersOnChain = await node.registry.getClusterMembers(node._activeClusterId);
+            } catch (e) {}
             if (typeof node._onClusterFinalized === 'function') {
               node._onClusterFinalized(node._activeClusterId, membersOnChain, moneroAddress);
             }
@@ -486,12 +489,15 @@ export async function monitorNetwork(node, DRY_RUN) {
                     }
                     if (data.type === 'cluster-finalized' && data.clusterId) {
                       const clusterInfo = await node.registry.clusters(data.clusterId);
-                      const onChainFinalized = clusterInfo && clusterInfo[3];
+                      const onChainFinalized = clusterInfo && clusterInfo[2];
                       if (!onChainFinalized) {
                         continue;
                       }
-                      const membersOnChain = clusterInfo && clusterInfo[0];
-                      const moneroAddress = clusterInfo && clusterInfo[1];
+                      let membersOnChain = null;
+                      try {
+                        membersOnChain = await node.registry.getClusterMembers(data.clusterId);
+                      } catch (e) {}
+                      const moneroAddress = clusterInfo && clusterInfo[0];
                       if (typeof node._onClusterFinalized === 'function') {
                         console.log('[Cluster] Finalization confirmed on-chain via coordinator broadcast');
                         node._onClusterFinalized(data.clusterId, membersOnChain, moneroAddress);

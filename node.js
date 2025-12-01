@@ -150,7 +150,7 @@ class ZNode {
       'function unregisterNode() external',
       'function finalizeCluster(address[] members, string moneroAddress) external returns (bytes32 clusterId)',
       'function dissolveCluster(bytes32 clusterId) external returns (bool rewarded)',
-      'function clusters(bytes32) external view returns (address[] members, string moneroAddress, uint256 createdAt, bool finalized)',
+      'function clusters(bytes32) external view returns (string moneroAddress, uint256 createdAt, bool finalized)',
       'function getRegisteredNodes(uint256 offset, uint256 limit) external view returns (address[] memory)',
       'function canParticipate(address node) external view returns (bool)',
       'function canDissolve(bytes32 clusterId) external view returns (bool, uint256 blacklistedCount)',
@@ -196,9 +196,9 @@ class ZNode {
 
     const KNOWN_DEFAULTS = {
       11155111: {
-        REGISTRY_ADDR: '0xFc9039325F10FF244cfC1cde32C27147F7c035D3',
-        STAKING_ADDR: '0x3A99824a1931b20d259f4fDd706D9170080051d6',
-        ZFI_ADDR: '0x3de981E18F9eA9B314cEf2D21758C9B8C07a40fC',
+        REGISTRY_ADDR: '0x2716396399377f3D6412660956280e308794417C',
+        STAKING_ADDR: '0xC7ECD047a64AcBaD9809dfd26b20E9437514cc3D',
+        ZFI_ADDR: '0x2B8428ab14004483f946eBD6b012b8983C2638B1',
         COORDINATOR_ADDR: '0xA02269FDCbA510B4D6aE6E36FcCC0Cdde0164815',
         BRIDGE_ADDR: '0xD35D383298ea021945d91A0F9ead65c101bdA384',
       },
@@ -516,9 +516,9 @@ class ZNode {
     }
     try {
       const clusterInfo = await this.registry.clusters(state.clusterId);
-      const finalized = clusterInfo && clusterInfo[3];
-      const onChainAddress = clusterInfo && clusterInfo[1];
-      const onChainMembers = clusterInfo && clusterInfo[0];
+      const onChainAddress = clusterInfo && clusterInfo[0];
+      const finalized = clusterInfo && clusterInfo[2];
+      const onChainMembers = await this.registry.getClusterMembers(state.clusterId);
       if (!finalized) {
         console.log('[Cluster] Saved cluster is not finalized on-chain, clearing state');
         this._clearClusterState();
@@ -580,10 +580,10 @@ class ZNode {
       
       // Get cluster members and Monero address
       const members = await this.registry.getClusterMembers(clusterId);
-      // Get monero address from clusters() - index 1
+      // Get monero address and finalized flag from clusters()
       const clusterData = await this.registry.clusters(clusterId);
-      const moneroAddress = clusterData[1];
-      const finalized = clusterData[3];
+      const moneroAddress = clusterData[0];
+      const finalized = clusterData[2];
       
       if (!finalized) {
         console.log('[Cluster] On-chain cluster is not finalized');
@@ -3258,7 +3258,7 @@ class ZNode {
   async isClusterFinalized(clusterId) {
     try {
       const clusterInfo = await this.registry.clusters(clusterId);
-      return !!(clusterInfo && clusterInfo[3]);
+      return !!(clusterInfo && clusterInfo[2]);
     } catch {
       return false;
     }
