@@ -602,8 +602,21 @@ class ZNode {
       return true;
     } catch (e) {
       console.log('[Cluster] Failed to verify cluster on-chain:', e.message || String(e));
-      this._saveClusterRestoreSnapshot(state);
-      return false;
+      console.log('[Cluster] Trusting local state file (RPC unavailable)');
+      this.clusterWalletName = state.walletName;
+      if (this.clusterState && typeof this.clusterState.update === 'function') {
+        this.clusterState.update({
+          clusterId: state.clusterId,
+          members: state.members,
+          finalAddress: state.finalAddress,
+          finalized: true,
+        });
+      }
+      if (this.p2p && typeof this.p2p.setActiveCluster === 'function') {
+        this.p2p.setActiveCluster(state.clusterId);
+      }
+      console.log('[Cluster] Restored from local state (unverified)');
+      return true;
     }
   }
 
