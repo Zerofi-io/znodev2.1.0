@@ -802,6 +802,24 @@ export async function monitorNetwork(node, DRY_RUN) {
         `  Members: ${members.length} (myIndex=${myIndex}, coordinator=${coordinator})`,
       );
 
+      const jitterRaw = process.env.NON_COORDINATOR_JITTER_MS;
+      const defaultJitterMs = 5000;
+      let maxJitterMs = defaultJitterMs;
+      if (jitterRaw != null) {
+        const jitterParsed = Number(jitterRaw);
+        if (Number.isFinite(jitterParsed) && jitterParsed >= 0) {
+          maxJitterMs = jitterParsed;
+        }
+      }
+      if (!isCoordinator && maxJitterMs > 0) {
+        const delay = Math.floor(Math.random() * maxJitterMs);
+        const delaySec = Math.floor(delay / 1000);
+        console.log(
+          `[Cluster] Non-coordinator jitter active; sleeping ${delaySec}s before cluster orchestration`,
+        );
+        await new Promise((r) => setTimeout(r, delay));
+      }
+
       const p2pOk = await node.initClusterP2P(clusterId, members, isCoordinator);
       if (!p2pOk) {
         console.log('[WARN] P2P init failed for cluster; will retry later');

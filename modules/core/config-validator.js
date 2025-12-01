@@ -16,6 +16,7 @@ class ConfigValidator {
     this.validateMoneroRPCBinary();
     this.validateClusterConfig();
     this.validateContractAddresses();
+    this.validateBridgeConfig();
     this.validateBackupConfig();
     this.validateEmergencySweepConfig();
     this.validateCircuitBreakerConfig();
@@ -292,6 +293,7 @@ class ConfigValidator {
       { name: 'STAKING_ADDR', value: process.env.STAKING_ADDR },
       { name: 'ZFI_ADDR', value: process.env.ZFI_ADDR },
       { name: 'COORDINATOR_ADDR', value: process.env.COORDINATOR_ADDR },
+      { name: 'BRIDGE_ADDR', value: process.env.BRIDGE_ADDR },
     ];
 
     for (const { name, value } of addresses) {
@@ -300,6 +302,35 @@ class ConfigValidator {
       }
     }
   }
+  validateBridgeConfig() {
+    const apiEnabled = process.env.BRIDGE_API_ENABLED;
+    if (apiEnabled !== undefined && !['0', '1'].includes(apiEnabled)) {
+      this.errors.push(`Invalid BRIDGE_API_ENABLED: ${apiEnabled} (must be '0' or '1')`);
+    }
+
+    const bridgeEnabled = process.env.BRIDGE_ENABLED;
+    if (bridgeEnabled !== undefined && !['0', '1'].includes(bridgeEnabled)) {
+      this.errors.push(`Invalid BRIDGE_ENABLED: ${bridgeEnabled} (must be '0' or '1')`);
+    }
+
+    if (bridgeEnabled === '1') {
+      if (!process.env.MONERO_RPC_URL && !process.env.MONERO_WALLET_RPC_URL) {
+        this.errors.push(
+          'BRIDGE_ENABLED=1 requires MONERO_RPC_URL or MONERO_WALLET_RPC_URL to be set',
+        );
+      }
+    }
+
+    if (process.env.BRIDGE_API_PORT) {
+      const port = Number(process.env.BRIDGE_API_PORT);
+      if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+        this.errors.push(
+          `Invalid BRIDGE_API_PORT: ${process.env.BRIDGE_API_PORT} (must be 1-65535)`,
+        );
+      }
+    }
+  }
+
   validateBackupConfig() {
     const TEST_MODE = process.env.TEST_MODE === '1';
 
