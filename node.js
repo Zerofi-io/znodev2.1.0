@@ -2280,14 +2280,27 @@ class ZNode {
 
     if (data.type === 'coord-alive') {
       this._lastCoordHeartbeatReceived = Date.now();
-    } else if (data.type === 'cluster-finalized') {
+    } else if (data.type === 'cluster-finalized' && data.clusterId) {
       if (this._clusterFinalized) return;
-      console.log('[Cluster] Received finalization broadcast from coordinator');
+      this._verifyAndSetFinalized(data.clusterId);
+    }
+  }
+
+  async _verifyAndSetFinalized(clusterId) {
+    try {
+      const isFinalized = await this.isClusterFinalized(clusterId);
+      if (!isFinalized) {
+        console.log('[Cluster] On-chain verification failed, cluster not finalized');
+        return;
+      }
+      console.log('[Cluster] Finalization confirmed on-chain');
       this._clusterFinalized = true;
       this._clusterFinalizedAt = Date.now();
       if (typeof this._saveClusterState === 'function') {
         this._saveClusterState();
       }
+    } catch (e) {
+      console.log('[Cluster] Failed to verify finalization:', e.message);
     }
   }
 
