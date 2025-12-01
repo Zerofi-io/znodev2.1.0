@@ -284,6 +284,10 @@ export class ClusterStateMachine extends EventEmitter {
   }
 
   fail(reason, error = null) {
+    if (this._currentState === ClusterStates.FAILED) {
+      return false;
+    }
+
     this.transition(
       ClusterStates.FAILED,
       {

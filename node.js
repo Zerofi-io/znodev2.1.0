@@ -2385,7 +2385,23 @@ class ZNode {
 
     console.log(`[CoordHB] Monitoring coordinator (timeout: ${timeoutMs / 1000}s)`);
 
-    this._coordMonitorTimer = setInterval(() => {
+    this._coordMonitorTimer = setInterval(async () => {
+      if (this._coordMonitorFailed) return;
+
+      try {
+        if (this.p2p && this._activeClusterId && this._sessionId) {
+          const r9999 = await this.p2p.getRoundData(this._activeClusterId, this._sessionId || 'coord', 9999);
+          for (const payload of Object.values(r9999 || {})) {
+            try {
+              const data = JSON.parse(payload);
+              if (data && data.type === 'coord-alive') {
+                this._lastCoordHeartbeatReceived = Date.now();
+              }
+            } catch (_ignored) {}
+          }
+        }
+      } catch (_ignored) {}
+
       const elapsed = Date.now() - this._lastCoordHeartbeatReceived;
 
       if (elapsed > timeoutMs) {
@@ -2404,6 +2420,9 @@ class ZNode {
               this.clusterState.recordFailure('coordinator_silent');
             }
           }
+          this._coordMonitorFailed = true;
+          this._stopCoordinatorMonitor();
+          return;
         } catch (_ignored) {}
       }
     }, checkIntervalMs);
@@ -2414,6 +2433,7 @@ class ZNode {
       clearInterval(this._coordMonitorTimer);
       this._coordMonitorTimer = null;
     }
+    this._coordMonitorFailed = false;
   }
 
   _handleCoordinatorHeartbeat(data) {

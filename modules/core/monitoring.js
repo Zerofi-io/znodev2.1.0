@@ -985,6 +985,11 @@ export async function monitorNetwork(node, DRY_RUN) {
             `[Retry] Cluster ${clusterId.substring(0, 10)} multisig - attempt ${attempt}/${maxMultisigAttempts}`,
           );
 
+          if (node.stateMachine && typeof node.stateMachine.reset === 'function') {
+            if (node.stateMachine.currentState !== 'IDLE') {
+              node.stateMachine.reset('preparing for cluster attempt');
+            }
+          }
           const preflightOk = await node._preflightMoneroForClusterAttempt(clusterId, attempt);
           if (!preflightOk) {
             console.log(
