@@ -168,26 +168,6 @@ class ConfigValidator {
       );
     }
 
-    if (process.env.AUTO_STAKE === '1' && !process.env.MONERO_FEE_ADDRESS) {
-      this.errors.push(
-        'AUTO_STAKE is enabled but MONERO_FEE_ADDRESS is not set - this is required for staking',
-      );
-    }
-
-    if (process.env.MONERO_FEE_ADDRESS) {
-      const addr = process.env.MONERO_FEE_ADDRESS;
-      const isValidLength = addr.length === 95;
-      const isValidPrefix = addr[0] === '4' || addr[0] === '8';
-      const isValidBase58 = /^[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]+$/.test(
-        addr,
-      );
-
-      if (!isValidLength || !isValidPrefix || !isValidBase58) {
-        this.errors.push(
-          `Invalid MONERO_FEE_ADDRESS: ${addr} (must be a 95-character Monero address starting with 4 or 8, using base58 encoding)`,
-        );
-      }
-    }
   }
 
   validateMoneroRpcTimingConfig() {

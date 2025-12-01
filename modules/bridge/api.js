@@ -893,7 +893,14 @@ export async function startWithdrawalMonitor(node) {
   console.log('[Withdrawal] Starting withdrawal event monitor...');
 
   try {
-    const filter = node.bridge.filters.TokensBurned();
+    const activeClusterId = node._activeClusterId;
+    if (!activeClusterId) {
+      console.log('[Withdrawal] Cannot start withdrawal monitor: missing activeClusterId');
+      node._withdrawalMonitorRunning = false;
+      return;
+    }
+
+    const filter = node.bridge.filters.TokensBurned(null, activeClusterId);
 
     const currentBlock = await node.provider.getBlockNumber();
     const fromBlock = Math.max(0, currentBlock - 300);
@@ -937,17 +944,36 @@ async function handleBurnEvent(node, event) {
       return;
     }
 
-    const user = event.args[0] || event.args.user;
-    const xmrAddress = event.args[1] || event.args.xmrAddress;
-    const amount = event.args[2] || event.args.amount;
-    const fee = event.args[3] || event.args.fee;
+    const activeClusterId = node._activeClusterId;
+    if (!activeClusterId) {
+      console.log('[Withdrawal] No activeClusterId set, skipping burn event');
+      return;
+    }
+
+    const user = event.args[0] ?? event.args.user;
+    const clusterIdFromEvent = event.args[1] ?? event.args.clusterId;
+    const xmrAddress = event.args[2] ?? event.args.xmrAddress;
+    const amount = event.args[3] ?? event.args.burnAmount ?? event.args.amount;
+    const fee = event.args[4] ?? event.args.fee;
 
     console.log('[Withdrawal] TokensBurned event detected:');
     console.log(`  TX: ${txHash}`);
     console.log(`  User: ${user}`);
+    console.log(`  Cluster ID: ${clusterIdFromEvent}`);
     console.log(`  XMR Address: ${xmrAddress}`);
     console.log(`  Amount: ${ethers.formatEther(amount)} zXMR`);
     console.log(`  Fee: ${ethers.formatEther(fee)} zXMR`);
+
+    if (
+      typeof clusterIdFromEvent === 'string' &&
+      typeof activeClusterId === 'string' &&
+      clusterIdFromEvent.toLowerCase() !== activeClusterId.toLowerCase()
+    ) {
+      console.log(
+        `[Withdrawal] Burn event clusterId mismatch (event=${clusterIdFromEvent}, local=${activeClusterId}), skipping`,
+      );
+      return;
+    }
 
     if (!isValidMoneroAddress(xmrAddress)) {
       console.log(`[Withdrawal] Invalid Monero address, skipping: ${xmrAddress}`);

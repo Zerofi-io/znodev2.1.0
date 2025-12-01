@@ -121,13 +121,6 @@ if [[ ! "$PRIVATE_KEY" =~ ^0x ]]; then
   PRIVATE_KEY="0x${PRIVATE_KEY}"
 fi
 
-# Monero Fee Address
-read -r -p "Monero fee address for receiving exchange fees: " MONERO_FEE_ADDRESS
-while [ -z "${MONERO_FEE_ADDRESS}" ]; do
-  echo "⚠️  Monero fee address is required."
-  read -r -p "Monero fee address: " MONERO_FEE_ADDRESS
-done
-
 MONERO_WALLET_PASSWORD="${DEFAULT_MONERO_WALLET_PASSWORD}"
 echo "ℹ️  Generated Monero wallet password (stored in .env only)"
 
@@ -222,9 +215,6 @@ P2P_BOOTSTRAP_PEERS=/ip4/185.191.116.142/tcp/9000/p2p/16Uiu2HAmDPgaLxg1KfAfPt3uo
 MONERO_RPC_URL=${MONERO_RPC_URL}
 MONERO_WALLET_RPC_USER=${MONERO_WALLET_RPC_USER}
 MONERO_WALLET_RPC_PASSWORD=${MONERO_WALLET_RPC_PASSWORD}
-
-# Staking configuration
-MONERO_FEE_ADDRESS=${MONERO_FEE_ADDRESS}
 
 REGISTRY_ADDR=0x2716396399377f3D6412660956280e308794417C
 STAKING_ADDR=0xC7ECD047a64AcBaD9809dfd26b20E9437514cc3D

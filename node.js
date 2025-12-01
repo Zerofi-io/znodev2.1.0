@@ -181,7 +181,7 @@ class ZNode {
 
     const stakingABI = [
       'function getNodeInfo(address node) external view returns (uint256,uint256,uint256,bool,uint256,uint256,uint256)',
-      'function stake(bytes32 _codeHash, string _moneroFeeAddress) external',
+      'function stake(bytes32 _codeHash, string _feeHint) external',
       'function topUpStake() external',
       'function getActiveNodes() external view returns (address[] memory)',
       'function slashForDowntimeWithProof(address _node, uint256 lastHeartbeatTs, bytes calldata sig) external',
@@ -1356,20 +1356,13 @@ class ZNode {
       }
 
       if (stakedAmt === 0n) {
-        const moneroFeeAddr = process.env.MONERO_FEE_ADDRESS;
-        if (!moneroFeeAddr) {
-          throw new Error(
-            'MONERO_FEE_ADDRESS is required for staking. Set this to your Monero address for receiving fees.',
-          );
-        }
-
         console.log('  Staking 1,000,000 ZFI...');
         const codeHash = ethers.id('znode-v3');
-        console.log(`  [INFO] stake(${codeHash}, ${moneroFeeAddr})`);
+        console.log(`  [INFO] stake(${codeHash}, '')`);
         if (DRY_RUN) {
           console.log('  [DRY_RUN] Would send stake transaction');
         } else {
-          const txS = await this.staking.stake(codeHash, moneroFeeAddr);
+          const txS = await this.staking.stake(codeHash, '');
           await txS.wait();
           console.log('  [OK] Staked');
         }
