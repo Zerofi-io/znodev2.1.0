@@ -697,6 +697,28 @@ class ZNode {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
       try {
+        if (this.p2p && this._activeClusterId) {
+          const r9999 = await this.p2p.getRoundData(this._activeClusterId, this._sessionId || 'coord', 9999);
+          for (const payload of Object.values(r9999 || {})) {
+            try {
+              const data = JSON.parse(payload);
+              if (data.type === 'cluster-finalized' && data.clusterId && data.moneroAddress) {
+                if (!expectedMoneroAddress || data.moneroAddress === expectedMoneroAddress) {
+                  console.log('[Cluster] Finalization confirmed via P2P broadcast');
+                  this._onClusterFinalized(
+                    data.clusterId,
+                    Array.isArray(data.members) && data.members.length ? data.members : fallbackMembers,
+                    data.moneroAddress,
+                  );
+                  return true;
+                }
+              }
+            } catch (_ignored) {}
+          }
+        }
+      } catch (_ignored) {}
+
+      try {
         const clusterId = await this.registry.nodeToCluster(selfAddress);
         if (clusterId && clusterId !== zeroCluster) {
           const info = await this.registry.clusters(clusterId);
@@ -732,6 +754,7 @@ class ZNode {
     console.log('[Cluster] Finalization not detected on-chain within timeout window');
     return false;
   }
+
 
   _onClusterFinalized(clusterId, members, finalAddress) {
     const effectiveClusterId = clusterId || this._activeClusterId;
