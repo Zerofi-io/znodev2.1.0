@@ -1155,7 +1155,7 @@ class ZNode {
 
   async start() {
     console.log('\n═══════════════════════════════════════════════');
-    console.log('   ZNode - Monero Multisig (WORKING!)');
+    console.log('zNode - Monero Bridge');
     console.log('═══════════════════════════════════════════════\n');
     console.log(`Address: ${this.wallet.address}`);
 
