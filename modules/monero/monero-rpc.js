@@ -406,9 +406,37 @@ class MoneroRPC {
   }
 
   async finalizeMultisig(exchangedKeys) {
-    const params = exchangedKeys ? { multisig_info: exchangedKeys } : {};
-    const result = await this.call('finalize_multisig', params, 180000);
-    return result;
+    const hasKeys =
+      exchangedKeys != null &&
+      !(Array.isArray(exchangedKeys) && exchangedKeys.length === 0);
+
+    const params = hasKeys ? { multisig_info: exchangedKeys } : {};
+
+    try {
+      return await this.call('finalize_multisig', params, 180000);
+    } catch (error) {
+      const msg = (error && error.message) || '';
+
+      // Some wallet versions do not accept multisig_info for finalize_multisig
+      if (
+        hasKeys &&
+        /Unknown parameter|invalid parameter|Too many arguments|too many params/i.test(msg)
+      ) {
+        return this.call('finalize_multisig', {}, 180000);
+      }
+
+      // Empty RPC error message - retry once without params
+      if (hasKeys && /^RPC Error: ?$/i.test(msg)) {
+        return this.call('finalize_multisig', {}, 180000);
+      }
+
+      // Wallet already finalized / already multisig - treat as success
+      if (/already.*final|already.*multisig/i.test(msg)) {
+        return {};
+      }
+
+      throw error;
+    }
   }
 
   async getHeight() {
