@@ -275,3 +275,51 @@ echo "⚠️  IMPORTANT:"
 echo "  - Node configured for production (Sepolia testnet)"
 echo "  - See README.md for full documentation"
 echo ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Create systemd service file
+# ─────────────────────────────────────────────────────────────────────────────
+create_systemd_service() {
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "⚠️  Not running as root, skipping systemd service creation."
+    echo "   Run as root or manually create the service file if desired."
+    return
+  fi
+
+  local SERVICE_FILE="/etc/systemd/system/znode.service"
+  local NODE_DIR="$SCRIPT_DIR/.."
+  NODE_DIR="$(cd "$NODE_DIR" && pwd)"
+
+  echo "📦 Creating systemd service file..."
+
+  cat > "$SERVICE_FILE" << SERVICEOF
+[Unit]
+Description=ZeroFi Node v2.1.0
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$NODE_DIR
+EnvironmentFile=$NODE_DIR/.env
+ExecStartPre=/bin/bash -c 'cd $NODE_DIR && ./scripts/start-monero-rpc.sh'
+ExecStart=/usr/bin/node $NODE_DIR/node.js
+ExecStopPost=/bin/bash -c 'pkill -f "p2p-daemon.*--socket" || true; rm -f /tmp/znode-p2p.sock'
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:$NODE_DIR/znode.log
+StandardError=append:$NODE_DIR/znode.log
+
+[Install]
+WantedBy=multi-user.target
+SERVICEOF
+
+  systemctl daemon-reload
+  systemctl enable znode.service 2>/dev/null || true
+
+  echo "✅ Systemd service created and enabled: znode.service"
+  echo "   Start with: ./start"
+  echo "   Stop with:  ./stop"
+  echo "   Logs:       journalctl -u znode -f  OR  tail -f znode.log"
+}
+
+create_systemd_service

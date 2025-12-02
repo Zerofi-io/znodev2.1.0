@@ -6,10 +6,10 @@ cd "$SCRIPT_DIR"
 
 PID_FILE="$SCRIPT_DIR/znode.pid"
 P2P_SOCKET="/tmp/znode-p2p.sock"
+SERVICE_NAME="znode.service"
 
-# Stop p2p-daemon if running (it's a child of node.js but may linger)
+# Stop p2p-daemon if running
 stop_p2p_daemon() {
-  # Find p2p-daemon process
   local daemon_pids=$(pgrep -f "p2p-daemon.*--socket" 2>/dev/null || true)
   if [ -n "$daemon_pids" ]; then
     echo "[stop] Stopping p2p-daemon..."
@@ -17,7 +17,6 @@ stop_p2p_daemon() {
       kill "$pid" 2>/dev/null || true
     done
     sleep 1
-    # Force kill if still running
     for pid in $daemon_pids; do
       if kill -0 "$pid" 2>/dev/null; then
         kill -9 "$pid" 2>/dev/null || true
@@ -25,11 +24,44 @@ stop_p2p_daemon() {
     done
   fi
   
-  # Clean up socket file
   if [ -e "$P2P_SOCKET" ]; then
     rm -f "$P2P_SOCKET"
   fi
 }
+
+# Check if systemd service exists and is running
+if [ -f "/etc/systemd/system/$SERVICE_NAME" ]; then
+  if systemctl is-active --quiet "$SERVICE_NAME"; then
+    echo "[stop] Stopping znode via systemd..."
+    systemctl stop "$SERVICE_NAME"
+    
+    # Wait for service to stop
+    for i in $(seq 1 30); do
+      if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+        echo "[stop] znode stopped."
+        stop_p2p_daemon
+        rm -f "$PID_FILE" 2>/dev/null || true
+        exit 0
+      fi
+      sleep 1
+    done
+    
+    echo "[stop] Service did not stop in 30s, forcing..."
+    systemctl kill "$SERVICE_NAME" 2>/dev/null || true
+    stop_p2p_daemon
+    rm -f "$PID_FILE" 2>/dev/null || true
+    echo "[stop] znode forcibly stopped."
+    exit 0
+  else
+    echo "[stop] znode is not running (systemd service inactive)."
+    stop_p2p_daemon
+    rm -f "$PID_FILE" 2>/dev/null || true
+    exit 0
+  fi
+fi
+
+# Fallback to legacy stop if no systemd service
+echo "[stop] No systemd service found, using legacy shutdown..."
 
 if [ ! -f "$PID_FILE" ]; then
   echo "[stop] No pidfile found ($PID_FILE). Is znode running?"

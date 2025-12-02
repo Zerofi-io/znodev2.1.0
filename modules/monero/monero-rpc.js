@@ -183,6 +183,17 @@ class MoneroRPC {
     return result.address;
   }
 
+  async makeIntegratedAddress(paymentId, standardAddress = null) {
+    const params = {};
+    if (paymentId) params.payment_id = paymentId;
+    if (standardAddress) params.standard_address = standardAddress;
+    const result = await this.call("make_integrated_address", params);
+    if (!result || !result.integrated_address) {
+      throw new Error("Failed to create integrated address");
+    }
+    return result.integrated_address;
+  }
+
   async createWallet(filename, password = '') {
     return this.call(
       'create_wallet',

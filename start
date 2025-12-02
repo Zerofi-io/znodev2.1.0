@@ -4,141 +4,159 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-PID_FILE="$SCRIPT_DIR/znode.pid"
 LOG_FILE="$SCRIPT_DIR/znode.log"
-P2P_DAEMON_DIR="$SCRIPT_DIR/p2p-daemon"
-P2P_DAEMON_BIN="$P2P_DAEMON_DIR/p2p-daemon"
-NODE_MODULES_DIR="$SCRIPT_DIR/node_modules"
+PID_FILE="$SCRIPT_DIR/znode.pid"
+SERVICE_NAME="znode.service"
 
-# Ensure Node.js dependencies are installed
-if [ ! -d "$NODE_MODULES_DIR" ] || [ ! -f "$NODE_MODULES_DIR/dotenv/package.json" ]; then
-  echo "[start] Installing Node.js dependencies..."
-  if [ -f "$SCRIPT_DIR/package-lock.json" ]; then
-    (cd "$SCRIPT_DIR" && npm ci --omit=dev)
-  else
-    (cd "$SCRIPT_DIR" && npm install --omit=dev)
-  fi
-fi
-
-MAX_LOG_SIZE="${MAX_LOG_SIZE_MB:-100}"  # Default 100MB
-MAX_LOG_FILES="${MAX_LOG_FILES:-5}"     # Keep 5 rotated logs
-LOG_MAX_AGE_MIN="${LOG_MAX_AGE_MIN:-1440}"  # Default 24h
-
-clean_old_logs() {
-  find "$SCRIPT_DIR" -maxdepth 1 -type f \
-    \( -name "znode.log*" -o -name "monero-rpc.log*" -o -name "monero-wallet-rpc.log*" \) \
-    -mmin "+$LOG_MAX_AGE_MIN" -print -delete 2>/dev/null || true
-}
-
-# Log rotation function
-rotate_logs() {
-  if [ ! -f "$LOG_FILE" ]; then
-    return
-  fi
+# Check if systemd service exists
+if [ -f "/etc/systemd/system/$SERVICE_NAME" ]; then
+  echo "[start] Using systemd service..."
   
-  local size_mb=$(du -m "$LOG_FILE" 2>/dev/null | cut -f1)
-  if [ "$size_mb" -ge "$MAX_LOG_SIZE" ]; then
-    echo "[start] Rotating log file (${size_mb}MB >= ${MAX_LOG_SIZE}MB)"
-    
-    # Rotate existing logs
-    for i in $(seq $((MAX_LOG_FILES - 1)) -1 1); do
-      if [ -f "${LOG_FILE}.$i" ]; then
-        mv "${LOG_FILE}.$i" "${LOG_FILE}.$((i + 1))"
-      fi
-    done
-    
-    # Move current log to .1
-    mv "$LOG_FILE" "${LOG_FILE}.1"
-    
-    # Remove oldest log if exceeds max
-    if [ -f "${LOG_FILE}.$((MAX_LOG_FILES + 1))" ]; then
-      rm -f "${LOG_FILE}.$((MAX_LOG_FILES + 1))"
-    fi
-  fi
-}
-
-# Build Go p2p-daemon (always rebuild to pick up code changes)
-build_p2p_daemon() {
-  echo "[start] Building Go p2p-daemon..."
-    
-    # Prefer /usr/local/go if it exists (may be newer than system Go)
-    if [ -x "/usr/local/go/bin/go" ]; then
-      export PATH="/usr/local/go/bin:$PATH"
-    fi
-    
-    # Check if Go is installed
-    if ! command -v go &> /dev/null; then
-      echo "[start] ERROR: Go is not installed. Please install Go 1.24+ first."
-      echo "[start] Run: wget -q https://go.dev/dl/go1.24.0.linux-amd64.tar.gz && sudo tar -C /usr/local -xzf go1.24.0.linux-amd64.tar.gz"
-      exit 1
-    fi
-    
-    # Build the daemon
-    (cd "$P2P_DAEMON_DIR" && go build -o p2p-daemon .) || {
-      echo "[start] ERROR: Failed to build p2p-daemon"
-      exit 1
-    }
-    
-    echo "[start] ✓ p2p-daemon built successfully"
-}
-
-
-# Ensure P2P port is open
-ensure_firewall() {
-  local P2P_PORT=9000
-  
-  # Check if ufw is available and active
-  if command -v ufw &> /dev/null; then
-    if ufw status | grep -q "Status: active"; then
-      # Check if port is already allowed
-      if ! ufw status | grep -q "$P2P_PORT/tcp.*ALLOW"; then
-        echo "[start] Opening P2P port $P2P_PORT in firewall..."
-        ufw allow $P2P_PORT/tcp >/dev/null 2>&1 || echo "[start] Warning: Failed to open port $P2P_PORT"
-      fi
-    fi
-  fi
-  
-  # Also try iptables directly as fallback (for non-ufw systems)
-  if command -v iptables &> /dev/null; then
-    # Check if port is blocked (no ACCEPT rule)
-    if ! iptables -L INPUT -n 2>/dev/null | grep -q "dpt:$P2P_PORT.*ACCEPT"; then
-      # Only add rule if iptables has other rules (i.e., it's being used)
-      if iptables -L INPUT -n 2>/dev/null | grep -q "DROP\|REJECT"; then
-        echo "[start] Adding iptables rule for port $P2P_PORT..."
-        iptables -I INPUT -p tcp --dport $P2P_PORT -j ACCEPT 2>/dev/null || true
-      fi
-    fi
-  fi
-}
-
-if [ -f "$PID_FILE" ]; then
-  PID="$(cat "$PID_FILE" 2>/dev/null || true)"
-  if [ -n "${PID}" ] && kill -0 "$PID" 2>/dev/null; then
-    echo "[start] znode is already running with PID $PID"
+  # Check if already running
+  if systemctl is-active --quiet "$SERVICE_NAME"; then
+    echo "[start] znode is already running via systemd."
     exit 0
+  fi
+  
+  # Rotate logs if needed
+  MAX_LOG_SIZE_MB="${MAX_LOG_SIZE_MB:-100}"
+  MAX_LOG_FILES="${MAX_LOG_FILES:-5}"
+  if [ -f "$LOG_FILE" ]; then
+    LOG_SIZE=$(stat -f%z "$LOG_FILE" 2>/dev/null || stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
+    MAX_BYTES=$((MAX_LOG_SIZE_MB * 1024 * 1024))
+    if [ "$LOG_SIZE" -ge "$MAX_BYTES" ]; then
+      echo "[start] Rotating logs (size: $((LOG_SIZE / 1024 / 1024))MB)..."
+      for i in $(seq $((MAX_LOG_FILES - 1)) -1 1); do
+        [ -f "${LOG_FILE}.$i" ] && mv "${LOG_FILE}.$i" "${LOG_FILE}.$((i + 1))"
+      done
+      mv "$LOG_FILE" "${LOG_FILE}.1"
+      touch "$LOG_FILE"
+    fi
+  fi
+  
+  # Build p2p-daemon if needed
+  if [ ! -f "$SCRIPT_DIR/p2p-daemon/p2p-daemon" ]; then
+    echo "[start] Building p2p-daemon..."
+    GO_BIN="${GO_BIN:-}"
+    if [ -z "$GO_BIN" ]; then
+      if [ -x "/usr/local/go/bin/go" ]; then
+        GO_BIN="/usr/local/go/bin/go"
+      elif command -v go &>/dev/null; then
+        GO_BIN="$(command -v go)"
+      else
+        echo "[start] ERROR: Go is not installed. Please install Go 1.24+ first."
+        exit 1
+      fi
+    fi
+    (cd "$SCRIPT_DIR/p2p-daemon" && "$GO_BIN" build -o p2p-daemon .)
+    echo "[start] p2p-daemon built successfully."
+  fi
+  
+  # Ensure port 9000 is open
+  if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
+    ufw allow 9000/tcp >/dev/null 2>&1 || true
+  fi
+  
+  # Start via systemd
+  systemctl start "$SERVICE_NAME"
+  sleep 2
+  
+  if systemctl is-active --quiet "$SERVICE_NAME"; then
+    echo "[start] znode started successfully via systemd."
+    echo "[start] View logs: tail -f $LOG_FILE"
   else
-    echo "[start] Removing stale pidfile"
-    rm -f "$PID_FILE"
+    echo "[start] Failed to start znode. Check: journalctl -u znode -n 50"
+    exit 1
+  fi
+  
+  exit 0
+fi
+
+# Fallback to legacy start if no systemd service
+echo "[start] No systemd service found, using legacy startup..."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Legacy startup code (for non-systemd or manual runs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Ensure deps
+if [ -f package-lock.json ]; then
+  npm ci --omit=dev --silent 2>/dev/null || npm ci --omit=dev
+else
+  npm install --omit=dev --silent 2>/dev/null || npm install --omit=dev
+fi
+
+# Log rotation
+MAX_LOG_SIZE_MB="${MAX_LOG_SIZE_MB:-100}"
+MAX_LOG_FILES="${MAX_LOG_FILES:-5}"
+LOG_MAX_AGE_MIN="${LOG_MAX_AGE_MIN:-1440}"
+
+if [ -f "$LOG_FILE" ]; then
+  LOG_SIZE=$(stat -f%z "$LOG_FILE" 2>/dev/null || stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
+  MAX_BYTES=$((MAX_LOG_SIZE_MB * 1024 * 1024))
+  if [ "$LOG_SIZE" -ge "$MAX_BYTES" ]; then
+    echo "[start] Rotating logs (size: $((LOG_SIZE / 1024 / 1024))MB)..."
+    for i in $(seq $((MAX_LOG_FILES - 1)) -1 1); do
+      [ -f "${LOG_FILE}.$i" ] && mv "${LOG_FILE}.$i" "${LOG_FILE}.$((i + 1))"
+    done
+    mv "$LOG_FILE" "${LOG_FILE}.1"
+    touch "$LOG_FILE"
   fi
 fi
 
-# Clean up old logs and rotate before starting
-clean_old_logs
-rotate_logs
+find "$SCRIPT_DIR" -maxdepth 1 -name "znode.log.*" -type f -mmin +$LOG_MAX_AGE_MIN -delete 2>/dev/null || true
 
-# Build p2p-daemon if needed
-build_p2p_daemon
+# Check if already running
+if [ -f "$PID_FILE" ]; then
+  OLD_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+  if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+    echo "[start] znode is already running (PID $OLD_PID). Use ./stop first."
+    exit 1
+  fi
+  rm -f "$PID_FILE"
+fi
 
-# Ensure firewall allows P2P port
-ensure_firewall
+# Build p2p-daemon
+GO_BIN="${GO_BIN:-}"
+if [ -z "$GO_BIN" ]; then
+  if [ -x "/usr/local/go/bin/go" ]; then
+    GO_BIN="/usr/local/go/bin/go"
+  elif command -v go &>/dev/null; then
+    GO_BIN="$(command -v go)"
+  else
+    echo "[start] ERROR: Go is not installed. Please install Go 1.24+ first."
+    exit 1
+  fi
+fi
 
-echo "[start] Starting Monero wallet RPC..."
-./scripts/start-monero-rpc.sh || { echo "[start] Failed to start Monero RPC"; exit 1; }
+echo "[start] Building p2p-daemon..."
+(cd "$SCRIPT_DIR/p2p-daemon" && "$GO_BIN" build -o p2p-daemon .)
+echo "[start] p2p-daemon built successfully."
 
+# Open port 9000
+if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
+  ufw allow 9000/tcp >/dev/null 2>&1 || true
+elif command -v iptables &>/dev/null; then
+  if iptables -L INPUT -n 2>/dev/null | grep -qE 'DROP|REJECT'; then
+    iptables -I INPUT -p tcp --dport 9000 -j ACCEPT 2>/dev/null || true
+  fi
+fi
+
+# Start Monero RPC
+./scripts/start-monero-rpc.sh
+
+# Start node
 echo "[start] Starting znode..."
 nohup node node.js >> "$LOG_FILE" 2>&1 &
-PID=$!
-echo "$PID" > "$PID_FILE"
+NODE_PID=$!
+echo "$NODE_PID" > "$PID_FILE"
 
-echo "[start] znode started with PID $PID (logs: $LOG_FILE)"
-echo "[start] Note: Go p2p-daemon will be spawned by node.js automatically"
+sleep 2
+if kill -0 "$NODE_PID" 2>/dev/null; then
+  echo "[start] znode started (PID $NODE_PID)"
+  echo "[start] View logs: tail -f $LOG_FILE"
+else
+  echo "[start] Failed to start znode. Check $LOG_FILE for errors."
+  rm -f "$PID_FILE"
+  exit 1
+fi

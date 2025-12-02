@@ -205,7 +205,7 @@ async function handleAPIRequest(node, req, res, pathname, params) {
         return jsonResponse(res, 503, { error: 'Cluster not ready' });
       }
 
-      const result = registerDepositRequest(node, ethAddress);
+      const result = await registerDepositRequest(node, ethAddress);
       return jsonResponse(res, 200, result);
     }
 
@@ -494,6 +494,11 @@ function loadBridgeState(node) {
       );
     }
 
+    if (data.pendingDepositRequests && typeof data.pendingDepositRequests === "object") {
+      node._pendingDepositRequests = new Map(Object.entries(data.pendingDepositRequests));
+      console.log(`[Bridge] Loaded ${node._pendingDepositRequests.size} pending deposit requests from disk`);
+    }
+
     if (Array.isArray(data.processedWithdrawals)) {
       node._processedWithdrawals = new Set(data.processedWithdrawals);
       console.log(`[Bridge] Loaded ${node._processedWithdrawals.size} processed withdrawals from disk`);
@@ -512,6 +517,9 @@ function saveBridgeState(node) {
       processedDeposits: node._processedDeposits ? Array.from(node._processedDeposits) : [],
       pendingMintSignatures: node._pendingMintSignatures
         ? Object.fromEntries(node._pendingMintSignatures)
+        : {},
+      pendingDepositRequests: node._pendingDepositRequests
+        ? Object.fromEntries(node._pendingDepositRequests)
         : {},
       processedWithdrawals: node._processedWithdrawals
         ? Array.from(node._processedWithdrawals)
@@ -929,24 +937,54 @@ export function getAllPendingSignatures(node) {
   return result;
 }
 
-export function registerDepositRequest(node, ethAddress, paymentId) {
+export async function registerDepositRequest(node, ethAddress, paymentId) {
   if (!node._pendingDepositRequests) {
     node._pendingDepositRequests = new Map();
   }
 
   let id = paymentId;
   if (!id) {
-    id = crypto.randomBytes(8).toString('hex');
+    id = crypto.randomBytes(8).toString("hex");
   }
 
   node._pendingDepositRequests.set(id, ethAddress);
+  saveBridgeState(node);
+
+  // Generate integrated address with the payment ID
+  let integratedAddress = null;
+  if (node.monero && node._clusterFinalAddress) {
+    try {
+      integratedAddress = await node.monero.makeIntegratedAddress(id, node._clusterFinalAddress);
+    } catch (e) {
+      console.log("[Bridge] Failed to create integrated address:", e.message);
+    }
+  }
 
   return {
     paymentId: id,
     multisigAddress: node._clusterFinalAddress,
+    integratedAddress: integratedAddress || node._clusterFinalAddress,
     ethAddress,
   };
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export async function startWithdrawalMonitor(node) {
   if (node._withdrawalMonitorRunning) {
