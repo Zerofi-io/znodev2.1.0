@@ -1,6 +1,5 @@
 import path from 'path';
 import { execFile } from 'child_process';
-import axios from 'axios';
 
 class RPCManager {
   constructor({ url, scriptPath } = {}) {
@@ -51,7 +50,7 @@ class RPCManager {
       });
     }
 
-    if (monero && monero.url) {
+    if (monero && typeof monero.call === 'function') {
       console.log('[RPCManager] Waiting for Monero RPC to become ready...');
       readyOk = false;
       const maxRetries = Number(process.env.RPC_READY_RETRIES || 60);
@@ -59,25 +58,7 @@ class RPCManager {
 
       for (let i = 0; i < maxRetries; i++) {
         try {
-          await axios.post(
-            `${monero.url}/json_rpc`,
-            {
-              jsonrpc: '2.0',
-              id: '0',
-              method: 'get_version',
-              params: {},
-            },
-            {
-              timeout: 5000,
-              auth:
-                monero.user && monero.password
-                  ? {
-                      username: monero.user,
-                      password: monero.password,
-                    }
-                  : undefined,
-            },
-          );
+          await monero.call('get_version', {}, 5000);
           console.log('[RPCManager] Monero RPC is ready');
           readyOk = true;
           break;
@@ -126,51 +107,21 @@ class RPCManager {
   startHealthWatch(monero) {
     if (this._timer) return;
 
-    const baseUrl = (this.url || (monero && monero.url) || '').replace(/\/+$/, '');
-    if (!baseUrl) {
-      console.warn('[RPCManager] No Monero RPC URL configured for health watch; skipping');
+    if (!monero || typeof monero.call !== 'function') {
+      console.warn('[RPCManager] No Monero RPC client configured for health watch; skipping');
       return;
     }
-
-    const auth =
-      monero && monero.user && monero.password
-        ? { username: monero.user, password: monero.password }
-        : undefined;
 
     const intervalMs = Number(process.env.RPC_HEALTH_INTERVAL_MS || 60000);
     const timeoutMs = Number(process.env.RPC_HEALTH_TIMEOUT_MS || 30000);
 
     this._timer = setInterval(async () => {
       try {
-        await axios.post(
-          baseUrl + '/json_rpc',
-          {
-            jsonrpc: '2.0',
-            id: 'health',
-            method: 'get_version',
-            params: {},
-          },
-          {
-            timeout: timeoutMs,
-            auth,
-          },
-        );
+        await monero.call('get_version', {}, timeoutMs);
       } catch (e) {
-        const status = e && e.response && e.response.status;
-        if (status === 401) {
-          console.warn(
-            '[RPCManager] Health check unauthorized (401); disabling health watch for this node',
-          );
-          clearInterval(this._timer);
-          this._timer = null;
-          return;
-        }
         let msg = e && e.message ? e.message : '';
         if (!msg && e && e.code) {
           msg = String(e.code);
-        }
-        if (!msg && status) {
-          msg = `HTTP ${status}`;
         }
         if (!msg) {
           try {
