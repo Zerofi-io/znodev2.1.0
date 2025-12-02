@@ -9,20 +9,32 @@ echo "║                    ZNode Setup Script                          ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 
-# --- Check Node.js version ---
+# --- Check/Install Node.js ---
 echo "[1/5] Checking Node.js version..."
+
+install_nodejs() {
+  echo "  Installing Node.js 20.x LTS..."
+  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - >/dev/null 2>&1
+  sudo apt-get install -y nodejs >/dev/null 2>&1
+  if ! command -v node >/dev/null 2>&1; then
+    echo "❌ ERROR: Failed to install Node.js automatically."
+    echo "   Please install Node.js >= 18 manually from https://nodejs.org/"
+    exit 1
+  fi
+  echo "  ✓ Node.js installed successfully"
+}
+
 if ! command -v node >/dev/null 2>&1; then
-  echo "❌ ERROR: Node.js is not installed."
-  echo "   Please install Node.js >= 18 from https://nodejs.org/"
-  exit 1
+  echo "  Node.js not found. Installing..."
+  install_nodejs
 fi
 
 NODE_VER_RAW="$(node -v | sed 's/^v//')"
 NODE_MAJOR="${NODE_VER_RAW%%.*}"
 if [ "${NODE_MAJOR:-0}" -lt 18 ]; then
-  echo "❌ ERROR: Node.js >= 18 required, found v$NODE_VER_RAW"
-  echo "   Please upgrade Node.js from https://nodejs.org/"
-  exit 1
+  echo "  Node.js version too old (v$NODE_VER_RAW). Upgrading..."
+  install_nodejs
+  NODE_VER_RAW="$(node -v | sed 's/^v//')"
 fi
 
 echo "✓ Node.js v$NODE_VER_RAW detected"
