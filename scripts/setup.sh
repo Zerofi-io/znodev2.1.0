@@ -116,16 +116,18 @@ echo ""
 
 # --- Collect configuration ---
 echo "[5/6] Configuring environment..."
+WRITE_ENV=1
 ENV_FILE="$SCRIPT_DIR/../.env"
 if [ -f "$ENV_FILE" ]; then
   echo "  Existing .env file detected"
   read -r -p "Overwrite existing .env? [y/N]: " ans
   case "${ans,,}" in
     y|yes) echo "Overwriting existing configuration..." ;;
-    *) echo " Keeping existing .env"; echo ""; echo "Setup complete! Use ./start to launch the node."; exit 0;;
+    *) WRITE_ENV=0; echo " Keeping existing .env"; echo "";;
   esac
 fi
 
+if [ "$WRITE_ENV" -eq 1 ]; then
 # Defaults
 DEFAULT_RPC_URL="https://ethereum-sepolia-rpc.publicnode.com"
 DEFAULT_MONERO_WALLET_PASSWORD="znode_monero_pw"
@@ -175,6 +177,7 @@ if [ -n "$PUBLIC_IP" ]; then
 fi
 
 P2P_BOOTSTRAP_PEERS=/ip4/185.191.116.142/tcp/9000/p2p/16Uiu2HAmDPgaLxg1KfAfPt3uoLKPz4g4NSwXjhb7U2jaExuSyjiF
+fi
 
 # Detect monero-wallet-cli for automatic multisig enabling
 MONERO_WALLET_CLI=""
@@ -253,6 +256,7 @@ else
   exit 1
 fi
 
+if [ "$WRITE_ENV" -eq 1 ]; then
 echo ""
 echo "[5/6] Writing configuration..."
 
@@ -297,6 +301,8 @@ EOF_ENV
 chmod 600 "$ENV_FILE" || true
 echo "Configuration written to $ENV_FILE"
 echo ""
+
+fi
 
 echo "[6/6] Validating configuration..."
 if node --check node.js 2>/dev/null; then
