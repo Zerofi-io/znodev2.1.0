@@ -188,6 +188,11 @@ async function handleAPIRequest(node, req, res, pathname, params) {
       });
     }
 
+    if (pathname === '/bridge/cluster/members' && req.method === 'GET') {
+      const members = node._clusterMembers || [];
+      return jsonResponse(res, 200, { members });
+    }
+
     if (pathname === '/bridge/deposit/request' && req.method === 'POST') {
       const body = await readRequestBody(req);
       const { ethAddress } = body;
