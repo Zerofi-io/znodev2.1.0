@@ -167,7 +167,7 @@ class ZNode {
       'function unregisterNode() external',
       'function finalizeCluster(address[] members, string moneroAddress) external returns (bytes32 clusterId)',
       'function dissolveCluster(bytes32 clusterId) external returns (bool rewarded)',
-      'function clusters(bytes32) external view returns (address[] members, string moneroAddress, uint256 createdAt, bool finalized)',
+      'function clusters(bytes32) external view returns (string moneroAddress, uint256 createdAt, bool finalized)',
       'function getRegisteredNodes(uint256 offset, uint256 limit) external view returns (address[] memory)',
       'function canParticipate(address node) external view returns (bool)',
       'function canDissolve(bytes32 clusterId) external view returns (bool, uint256 blacklistedCount)',
@@ -556,9 +556,7 @@ class ZNode {
       return false;
     }
     try {
-      const clusterInfo = await this.registry.clusters(state.clusterId);
-      const onChainAddress = clusterInfo && clusterInfo[1];
-      const finalized = clusterInfo && clusterInfo[3];
+      const [onChainAddress, , finalized] = await this.registry.clusters(state.clusterId);
       const onChainMembers = await this.registry.getClusterMembers(state.clusterId);
       if (!finalized) {
         console.log('[Cluster] Saved cluster is not finalized on-chain, clearing state');
@@ -636,9 +634,7 @@ class ZNode {
         return false;
       }
       const members = await this.registry.getClusterMembers(clusterId);
-      const clusterData = await this.registry.clusters(clusterId);
-      const moneroAddress = clusterData[0];
-      const finalized = clusterData[2];
+      const [moneroAddress, , finalized] = await this.registry.clusters(clusterId);
       if (!finalized) {
         console.log('[Cluster] On-chain cluster is not finalized');
         return false;
@@ -736,9 +732,7 @@ class ZNode {
       try {
         const clusterId = await this.registry.nodeToCluster(selfAddress);
         if (clusterId && clusterId !== zeroCluster) {
-          const info = await this.registry.clusters(clusterId);
-          const moneroAddress = info && info[0];
-          const finalized = info && info[2];
+          const [moneroAddress, , finalized] = await this.registry.clusters(clusterId);
           if (finalized && moneroAddress) {
             if (expectedMoneroAddress && moneroAddress !== expectedMoneroAddress) {
               console.log(
@@ -3600,8 +3594,8 @@ class ZNode {
 
   async isClusterFinalized(clusterId) {
     try {
-      const clusterInfo = await this.registry.clusters(clusterId);
-      return !!(clusterInfo && clusterInfo[3]);
+      const [, , finalized] = await this.registry.clusters(clusterId);
+      return !!finalized;
     } catch {
       return false;
     }
