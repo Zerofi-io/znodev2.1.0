@@ -63,8 +63,8 @@ RPC_CMD+=(--rpc-login "$RPC_USER:$RPC_PASS")
 echo "[start-monero-rpc] RPC authentication enabled"
 
 if [ "$BIND" != "127.0.0.1" ] && [ "${TEST_MODE:-0}" != "1" ]; then
-  echo "[start-monero-rpc] ⚠️  WARNING: Binding to $BIND in production mode"
-  echo "[start-monero-rpc] ⚠️  Ensure firewall is configured and consider using TLS/mTLS"
+  echo "[start-monero-rpc] WARNING: Binding to $BIND in production mode"
+  echo "[start-monero-rpc] Ensure firewall is configured and consider using TLS/mTLS"
 fi
 
 if [ "${MONERO_TRUST_DAEMON:-0}" = "1" ]; then

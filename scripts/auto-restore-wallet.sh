@@ -51,7 +51,7 @@ for backup in $BACKUPS_V2; do
   
   MAC_FILE="${backup}.mac"
   if [ ! -f "$MAC_FILE" ]; then
-    echo "⚠️  Warning: MAC file missing for $BACKUP_NAME, skipping"
+    echo "  Warning: MAC file missing for $BACKUP_NAME, skipping"
     continue
   fi
   
@@ -60,7 +60,7 @@ for backup in $BACKUPS_V2; do
   ACTUAL_MAC=$(openssl dgst -sha256 -hmac "$MAC_KEY" -binary "$backup" | xxd -p -c 64)
   
   if [ "$EXPECTED_MAC" != "$ACTUAL_MAC" ]; then
-    echo "⚠️  Warning: MAC verification failed for $BACKUP_NAME (file may be corrupted or tampered), skipping"
+    echo "  Warning: MAC verification failed for $BACKUP_NAME (file may be corrupted or tampered), skipping"
     continue
   fi
   
@@ -83,7 +83,7 @@ for backup in $BACKUPS_V1; do
     continue
   fi
   
-  echo "⚠️  Restoring legacy backup (v1, no integrity check): $BACKUP_NAME"
+  echo "  Restoring legacy backup (v1, no integrity check): $BACKUP_NAME"
   
   TAR_FILE="${backup%.enc}"
   

@@ -10,7 +10,7 @@ if [ -z "${WALLET_BACKUP_PASSPHRASE:-}" ]; then
   if [ -f "$PASS_FILE" ]; then
     WALLET_BACKUP_PASSPHRASE="$(cat "$PASS_FILE")"
   else
-    echo "❌ ERROR: WALLET_BACKUP_PASSPHRASE environment variable is required"
+    echo "ERROR: ERROR: WALLET_BACKUP_PASSPHRASE environment variable is required"
     echo "   Set a strong passphrase in your .env file or environment, or let the node generate one on first startup."
     exit 1
   fi
@@ -26,7 +26,7 @@ chmod 700 "$BACKUP_DIR"
 WALLETS=$(find "$WALLET_DIR" -maxdepth 1 -name "znode_*" -type f ! -name "*.keys" 2>/dev/null || true)
 
 if [ -z "$WALLETS" ]; then
-  echo "⚠️  No znode wallets found in $WALLET_DIR"
+  echo "  No znode wallets found in $WALLET_DIR"
   exit 0  # Not an error - just nothing to backup yet
 fi
 
@@ -36,7 +36,7 @@ for wallet in $WALLETS; do
   KEYS_FILE="${wallet}.keys"
   
   if [ ! -f "$KEYS_FILE" ]; then
-    echo "⚠️  Warning: ${WALLET_NAME}.keys not found, skipping"
+    echo "  Warning: ${WALLET_NAME}.keys not found, skipping"
     continue
   fi
   
@@ -62,9 +62,9 @@ for wallet in $WALLETS; do
 done
 
 if [ $BACKUP_COUNT -gt 0 ]; then
-  echo "✓ Backed up $BACKUP_COUNT wallet(s) to $BACKUP_DIR"
+  echo " Backed up $BACKUP_COUNT wallet(s) to $BACKUP_DIR"
 else
-  echo "⚠️  No wallets were backed up"
+  echo "  No wallets were backed up"
 fi
 
 exit 0

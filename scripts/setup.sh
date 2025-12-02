@@ -4,9 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
-echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║                    ZNode Setup Script                          ║"
-echo "╚════════════════════════════════════════════════════════════════╝"
+echo "================================================================"
+echo "                    ZNode Setup Script                          "
+echo "================================================================"
 echo ""
 
 # --- Check/Install Node.js ---
@@ -17,11 +17,11 @@ install_nodejs() {
   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - >/dev/null 2>&1
   sudo apt-get install -y nodejs >/dev/null 2>&1
   if ! command -v node >/dev/null 2>&1; then
-    echo "❌ ERROR: Failed to install Node.js automatically."
+    echo " ERROR: Failed to install Node.js automatically."
     echo "   Please install Node.js >= 18 manually from https://nodejs.org/"
     exit 1
   fi
-  echo "  ✓ Node.js installed successfully"
+  echo "   Node.js installed successfully"
 }
 
 if ! command -v node >/dev/null 2>&1; then
@@ -37,7 +37,7 @@ if [ "${NODE_MAJOR:-0}" -lt 18 ]; then
   NODE_VER_RAW="$(node -v | sed 's/^v//')"
 fi
 
-echo "✓ Node.js v$NODE_VER_RAW detected"
+echo " Node.js v$NODE_VER_RAW detected"
 echo ""
 
 # --- Check/Install Go ---
@@ -66,18 +66,18 @@ if command -v go &> /dev/null; then
     echo "  Go $GO_VER_RAW found but >= $GO_MIN_MAJOR.$GO_MIN_MINOR required"
     install_go
   else
-    echo "✓ Go $GO_VER_RAW detected"
+    echo " Go $GO_VER_RAW detected"
   fi
 elif [ -x "/usr/local/go/bin/go" ]; then
   export PATH="/usr/local/go/bin:$PATH"
-  echo "✓ Go found at /usr/local/go/bin/go"
+  echo " Go found at /usr/local/go/bin/go"
 else
   install_go
 fi
 
 # Verify Go is working
 if ! go version &> /dev/null; then
-  echo "❌ ERROR: Go installation failed"
+  echo " ERROR: Go installation failed"
   exit 1
 fi
 echo ""
@@ -90,18 +90,18 @@ if [ -f package-lock.json ]; then
 else
   npm install --omit=dev --quiet
 fi
-echo "✓ Dependencies installed"
+echo " Dependencies installed"
 echo ""
 
 # --- Collect configuration ---
 echo "[5/6] Configuring environment..."
 ENV_FILE="$SCRIPT_DIR/../.env"
 if [ -f "$ENV_FILE" ]; then
-  echo "⚠️  Existing .env file detected"
+  echo "  Existing .env file detected"
   read -r -p "Overwrite existing .env? [y/N]: " ans
   case "${ans,,}" in
     y|yes) echo "Overwriting existing configuration..." ;;
-    *) echo "✓ Keeping existing .env"; echo ""; echo "Setup complete! Use ./start to launch the node."; exit 0;;
+    *) echo " Keeping existing .env"; echo ""; echo "Setup complete! Use ./start to launch the node."; exit 0;;
   esac
 fi
 
@@ -124,7 +124,7 @@ RPC_URL="${RPC_URL:-$DEFAULT_RPC_URL}"
 read -r -s -p "Ethereum private key (0x...): " PRIVATE_KEY
 echo ""
 while [ -z "${PRIVATE_KEY}" ]; do
-  echo "⚠️  Private key is required."
+  echo "  Private key is required."
   read -r -s -p "Ethereum private key (0x...): " PRIVATE_KEY
   echo ""
 done
@@ -134,7 +134,7 @@ if [[ ! "$PRIVATE_KEY" =~ ^0x ]]; then
 fi
 
 MONERO_WALLET_PASSWORD="${DEFAULT_MONERO_WALLET_PASSWORD}"
-echo "ℹ️  Generated Monero wallet password (stored in .env only)"
+echo "  Generated Monero wallet password (stored in .env only)"
 
 # All other settings use defaults
 MONERO_RPC_URL="http://127.0.0.1:18083"
@@ -159,18 +159,18 @@ P2P_BOOTSTRAP_PEERS=/ip4/185.191.116.142/tcp/9000/p2p/16Uiu2HAmDPgaLxg1KfAfPt3uo
 MONERO_WALLET_CLI=""
 if command -v monero-wallet-cli >/dev/null 2>&1; then
   MONERO_WALLET_CLI="$(command -v monero-wallet-cli)"
-  echo "✓ Found monero-wallet-cli at $MONERO_WALLET_CLI"
+  echo " Found monero-wallet-cli at $MONERO_WALLET_CLI"
 elif command -v monero-wallet-rpc >/dev/null 2>&1; then
   RPC_BIN="$(command -v monero-wallet-rpc)"
   RPC_DIR="$(dirname "$RPC_BIN")"
   if [ -x "$RPC_DIR/monero-wallet-cli" ]; then
     MONERO_WALLET_CLI="$RPC_DIR/monero-wallet-cli"
-    echo "✓ Found monero-wallet-cli next to monero-wallet-rpc at $MONERO_WALLET_CLI"
+    echo " Found monero-wallet-cli next to monero-wallet-rpc at $MONERO_WALLET_CLI"
   fi
 fi
 
 if [ -z "$MONERO_WALLET_CLI" ]; then
-  echo "⚠️  monero-wallet-cli not found on PATH. Attempting automatic install..."
+  echo "monero-wallet-cli not found on PATH. Attempting automatic install of Monero CLI (wallet-cli + wallet-rpc)..."
   if command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
     TMP_DIR="$(mktemp -d)"
     CLI_URL="https://downloads.getmonero.org/cli/linux64"
@@ -178,30 +178,40 @@ if [ -z "$MONERO_WALLET_CLI" ]; then
     if curl -L -o "$ARCHIVE" "$CLI_URL" >/dev/null 2>&1; then
       if tar -xjf "$ARCHIVE" -C "$TMP_DIR" >/dev/null 2>&1; then
         CLI_BIN="$(find "$TMP_DIR" -maxdepth 3 -type f -name 'monero-wallet-cli' | head -n 1 || true)"
+        RPC_BIN="$(find "$TMP_DIR" -maxdepth 3 -type f -name 'monero-wallet-rpc' | head -n 1 || true)"
         if [ -n "$CLI_BIN" ] && [ -f "$CLI_BIN" ]; then
           if install -m 0755 "$CLI_BIN" /usr/local/bin/monero-wallet-cli 2>/dev/null; then
             MONERO_WALLET_CLI="/usr/local/bin/monero-wallet-cli"
-            echo "✓ Installed monero-wallet-cli to $MONERO_WALLET_CLI"
+            echo " Installed monero-wallet-cli to $MONERO_WALLET_CLI"
           else
-            echo "⚠️  Failed to install monero-wallet-cli to /usr/local/bin (insufficient permissions?)."
+            echo "Failed to install monero-wallet-cli to /usr/local/bin (insufficient permissions?)."
           fi
         else
-          echo "⚠️  Could not locate monero-wallet-cli in downloaded archive."
+          echo "Could not locate monero-wallet-cli in downloaded archive."
+        fi
+        if [ -n "$RPC_BIN" ] && [ -f "$RPC_BIN" ]; then
+          if install -m 0755 "$RPC_BIN" /usr/local/bin/monero-wallet-rpc 2>/dev/null; then
+            echo " Installed monero-wallet-rpc to /usr/local/bin/monero-wallet-rpc"
+          else
+            echo "Failed to install monero-wallet-rpc to /usr/local/bin (insufficient permissions?)."
+          fi
+        else
+          echo "Could not locate monero-wallet-rpc in downloaded archive."
         fi
       else
-        echo "⚠️  Failed to extract downloaded Monero CLI archive."
+        echo "Failed to extract downloaded Monero CLI archive."
       fi
     else
-      echo "⚠️  Failed to download Monero CLI from $CLI_URL"
+      echo "Failed to download Monero CLI from $CLI_URL"
     fi
     rm -rf "$TMP_DIR"
   else
-    echo "⚠️  curl or tar not available; cannot auto-download Monero CLI."
+    echo "curl or tar not available; cannot auto-download Monero CLI."
   fi
 fi
 
 if [ -z "$MONERO_WALLET_CLI" ]; then
-  echo "⚠️  monero-wallet-cli is still missing. Multisig auto-enable will log a warning until you install it."
+  echo "monero-wallet-cli is still missing. Multisig auto-enable will log a warning until you install it."
 fi
 
 echo ""
@@ -245,14 +255,14 @@ FORCE_SELECT=0
 EOF_ENV
 
 chmod 600 "$ENV_FILE" || true
-echo "✓ Configuration written to $ENV_FILE"
+echo "Configuration written to $ENV_FILE"
 echo ""
 
 echo "[6/6] Validating configuration..."
 if node --check node.js 2>/dev/null; then
-  echo "✓ Syntax validation passed"
+  echo "Syntax validation passed"
 else
-  echo "⚠️  Warning: Could not validate syntax"
+  echo "  Warning: Could not validate syntax"
 fi
 echo ""
 
@@ -275,25 +285,25 @@ else
   echo "[Firewall] ufw not found. Please ensure TCP port 9000 is open inbound for P2P."
 fi
 
-echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║                    Setup Complete!                             ║"
-echo "╚════════════════════════════════════════════════════════════════╝"
+echo "================================================================"
+echo "Setup Complete!"
+echo "================================================================"
 echo ""
 echo "Next steps:"
 echo "  1. Start the node: ./start"
 echo "  2. View logs: tail -f znode.log"
 echo ""
-echo "⚠️  IMPORTANT:"
+echo "IMPORTANT:"
 echo "  - Node configured for production (Sepolia testnet)"
 echo "  - See README.md for full documentation"
 echo ""
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 # Create systemd service file
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 create_systemd_service() {
   if [ "$(id -u)" -ne 0 ]; then
-    echo "⚠️  Not running as root, skipping systemd service creation."
+    echo "Not running as root, skipping systemd service creation."
     echo "   Run as root or manually create the service file if desired."
     return
   fi
@@ -302,7 +312,7 @@ create_systemd_service() {
   local NODE_DIR="$SCRIPT_DIR/.."
   NODE_DIR="$(cd "$NODE_DIR" && pwd)"
 
-  echo "📦 Creating systemd service file..."
+  echo "Creating systemd service file..."
 
   cat > "$SERVICE_FILE" << SERVICEOF
 [Unit]
@@ -328,7 +338,7 @@ SERVICEOF
   systemctl daemon-reload
   systemctl enable znode.service 2>/dev/null || true
 
-  echo "✅ Systemd service created and enabled: znode.service"
+  echo " Systemd service created and enabled: znode.service"
   echo "   Start with: ./start"
   echo "   Stop with:  ./stop"
   echo "   Logs:       journalctl -u znode -f  OR  tail -f znode.log"

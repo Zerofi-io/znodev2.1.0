@@ -5,9 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_DIR="/root/.znode-backup/wallets"
 WALLET_DIR="$HOME/.monero-wallets"
 
-echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║              Monero Wallet Backup (Encrypted)                  ║"
-echo "╚════════════════════════════════════════════════════════════════╝"
+echo ""
+echo "              Monero Wallet Backup (Encrypted)                  "
+echo ""
 echo ""
 
 # Create backup directory
@@ -18,7 +18,7 @@ chmod 700 "$BACKUP_DIR"
 WALLETS=$(find "$WALLET_DIR" -maxdepth 1 -name "znode_*" -type f ! -name "*.keys" 2>/dev/null || true)
 
 if [ -z "$WALLETS" ]; then
-  echo "❌ No znode wallets found in $WALLET_DIR"
+  echo " No znode wallets found in $WALLET_DIR"
   exit 1
 fi
 
@@ -35,12 +35,12 @@ read -s -p "Confirm passphrase: " PASSPHRASE2
 echo ""
 
 if [ "$PASSPHRASE" != "$PASSPHRASE2" ]; then
-  echo "❌ Passphrases do not match"
+  echo " Passphrases do not match"
   exit 1
 fi
 
 if [ -z "$PASSPHRASE" ]; then
-  echo "❌ Passphrase cannot be empty"
+  echo " Passphrase cannot be empty"
   exit 1
 fi
 
@@ -52,7 +52,7 @@ for wallet in $WALLETS; do
   KEYS_FILE="${wallet}.keys"
   
   if [ ! -f "$KEYS_FILE" ]; then
-    echo "⚠️  Warning: ${WALLET_NAME}.keys not found, skipping"
+    echo "  Warning: ${WALLET_NAME}.keys not found, skipping"
     continue
   fi
   
@@ -68,13 +68,13 @@ for wallet in $WALLETS; do
   rm -f "$TAR_FILE"
   chmod 600 "$ENCRYPTED_FILE"
   
-  echo "  ✅ Backed up: ${WALLET_NAME} → ${ENCRYPTED_FILE}"
+  echo "   Backed up: ${WALLET_NAME}  ${ENCRYPTED_FILE}"
 done
 
 echo ""
-echo "✅ Wallet backup complete!"
+echo " Wallet backup complete!"
 echo "   Location: $BACKUP_DIR"
 echo "   Encryption: AES-256-CBC"
 echo ""
-echo "⚠️  IMPORTANT: Keep your passphrase safe!"
+echo "  IMPORTANT: Keep your passphrase safe!"
 echo "   Without it, backups cannot be restored."
