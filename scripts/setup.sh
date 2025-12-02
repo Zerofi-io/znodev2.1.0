@@ -239,6 +239,22 @@ if [ -z "$MONERO_WALLET_CLI" ]; then
   fi
 fi
 
+if [ -z "$MONERO_WALLET_CLI" ] || [ -z "$MONERO_WALLET_RPC_BIN" ]; then
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "Attempting to install Monero CLI from apt-get..."
+    $SUDO apt-get update -y >/dev/null 2>&1 || true
+    $SUDO apt-get install -y monero monero-cli monero-wallet-cli monero-wallet-rpc >/dev/null 2>&1 || true
+    if [ -z "$MONERO_WALLET_CLI" ] && command -v monero-wallet-cli >/dev/null 2>&1; then
+      MONERO_WALLET_CLI="$(command -v monero-wallet-cli)"
+      echo " Installed monero-wallet-cli via apt-get at $MONERO_WALLET_CLI"
+    fi
+    if [ -z "$MONERO_WALLET_RPC_BIN" ] && command -v monero-wallet-rpc >/dev/null 2>&1; then
+      MONERO_WALLET_RPC_BIN="$(command -v monero-wallet-rpc)"
+      echo " Installed monero-wallet-rpc via apt-get at $MONERO_WALLET_RPC_BIN"
+    fi
+  fi
+fi
+
 if [ -z "$MONERO_WALLET_CLI" ]; then
   echo "monero-wallet-cli is still missing. Multisig auto-enable will log a warning until you install it."
 fi
