@@ -19,6 +19,7 @@ if command -v apt-get >/dev/null 2>&1; then
   command -v curl >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS curl"
   command -v wget >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS wget"
   command -v tar >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS tar"
+  command -v bzip2 >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS bzip2"
   if [ -n "$MISSING_PKGS" ]; then
     $SUDO apt-get update -y >/dev/null 2>&1 || true
     $SUDO apt-get install -y $MISSING_PKGS >/dev/null 2>&1 || echo "Failed to install packages:$MISSING_PKGS"
