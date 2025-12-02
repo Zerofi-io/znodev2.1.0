@@ -2431,15 +2431,20 @@ class ZNode {
     }
 
     const intervalMs = Number(process.env.COORD_HEARTBEAT_INTERVAL_MS || 10000);
+    const maxBroadcasts = Number(process.env.COORD_HEARTBEAT_MAX_BROADCASTS || 5);
     this._lastCoordHeartbeatSent = Date.now();
+    this._coordHeartbeatCount = 0;
 
-    console.log(`[CoordHB] Starting coordinator heartbeat (interval: ${intervalMs / 1000}s)`);
+    console.log(`[CoordHB] Starting coordinator heartbeat (interval: ${intervalMs / 1000}s, max: ${maxBroadcasts})`);
 
     const sendHeartbeat = async () => {
       if (!this.p2p || !this._activeClusterId) {
         return;
       }
-
+      if (this._coordHeartbeatCount >= maxBroadcasts) {
+        this._stopCoordinatorHeartbeat();
+        return;
+      }
       try {
         await this.p2p.broadcastRoundData(
           clusterId,
@@ -2452,6 +2457,7 @@ class ZNode {
           }),
         );
         this._lastCoordHeartbeatSent = Date.now();
+        this._coordHeartbeatCount++;
       } catch (e) {
         console.log('[CoordHB] Failed to send heartbeat:', e.message || String(e));
       }
