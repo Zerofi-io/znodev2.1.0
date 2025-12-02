@@ -14,10 +14,20 @@ const MoneroHealth = {
   QUARANTINED: 'QUARANTINED',
 };
 
+function isBridgeEnabled() {
+  const v = process.env.BRIDGE_ENABLED;
+  return v === undefined || v === '1';
+}
+
+function isBridgeApiEnabled() {
+  const v = process.env.BRIDGE_API_ENABLED;
+  return v === undefined || v === '1';
+}
+
 export function startBridgeAPI(node) {
-  const apiEnabled = process.env.BRIDGE_API_ENABLED === '1';
+  const apiEnabled = isBridgeApiEnabled();
   if (!apiEnabled) {
-    console.log('[BridgeAPI] API server disabled (BRIDGE_API_ENABLED != 1)');
+    console.log('[BridgeAPI] API server disabled by configuration (BRIDGE_API_ENABLED=0)');
     return;
   }
 
@@ -163,7 +173,7 @@ async function handleAPIRequest(node, req, res, pathname, params) {
         status: 'ok',
         clusterFinalized: node._clusterFinalized,
         multisigAddress: node._clusterFinalAddress || null,
-        bridgeEnabled: process.env.BRIDGE_ENABLED === '1',
+        bridgeEnabled: isBridgeEnabled(),
       });
     }
 
@@ -350,7 +360,7 @@ async function getClusterStatus(node) {
     moneroHealth === MoneroHealth.HEALTHY &&
     p2pConnected &&
     allMembersHealthy &&
-    process.env.BRIDGE_ENABLED === '1';
+    isBridgeEnabled();
 
   const syncMinVisibility = Number(process.env.MIN_P2P_VISIBILITY || members.length || 0);
 
@@ -581,9 +591,9 @@ export async function startDepositMonitor(node) {
     return;
   }
 
-  const bridgeEnabled = process.env.BRIDGE_ENABLED === '1';
+  const bridgeEnabled = isBridgeEnabled();
   if (!bridgeEnabled) {
-    console.log('[Bridge] Deposit monitoring disabled (BRIDGE_ENABLED != 1)');
+    console.log('[Bridge] Deposit monitoring disabled by configuration (BRIDGE_ENABLED=0)');
     return;
   }
 
@@ -870,9 +880,9 @@ export async function startWithdrawalMonitor(node) {
     return;
   }
 
-  const bridgeEnabled = process.env.BRIDGE_ENABLED === '1';
+  const bridgeEnabled = isBridgeEnabled();
   if (!bridgeEnabled) {
-    console.log('[Withdrawal] Withdrawal monitoring disabled (BRIDGE_ENABLED != 1)');
+    console.log('[Withdrawal] Withdrawal monitoring disabled by configuration (BRIDGE_ENABLED=0)');
     return;
   }
 
