@@ -555,9 +555,45 @@ class ZNode {
       this._clearClusterState();
       return false;
     }
+    let effectiveClusterId = state.clusterId;
+    let onChainAddress;
+    let finalized;
+    let onChainMembers;
     try {
-      const [onChainAddress, , finalized] = await this.registry.clusters(state.clusterId);
-      const onChainMembers = await this.registry.getClusterMembers(state.clusterId);
+      try {
+        [onChainAddress, , finalized] = await this.registry.clusters(effectiveClusterId);
+        onChainMembers = await this.registry.getClusterMembers(effectiveClusterId);
+      } catch (primaryErr) {
+        // If lookup by stored clusterId fails, try computing canonical clusterId from members
+        try {
+          const members = (state.members || []).map((a) => ethers.getAddress(a));
+          const sortedMembers = [...members].sort((a, b) => {
+            const la = a.toLowerCase();
+            const lb = b.toLowerCase();
+            if (la < lb) return -1;
+            if (la > lb) return 1;
+            return 0;
+          });
+          const canonicalId = ethers.solidityPackedKeccak256(['address[]'], [sortedMembers]);
+          if (canonicalId && canonicalId !== effectiveClusterId) {
+            const [addr2, , finalized2] = await this.registry.clusters(canonicalId);
+            const members2 = await this.registry.getClusterMembers(canonicalId);
+            if (finalized2 && addr2 && addr2 === state.finalAddress) {
+              console.log('[Cluster] Migrating stored clusterId to canonical on-chain id');
+              effectiveClusterId = canonicalId;
+              onChainAddress = addr2;
+              finalized = finalized2;
+              onChainMembers = members2;
+            } else {
+              throw primaryErr;
+            }
+          } else {
+            throw primaryErr;
+          }
+        } catch (fallbackErr) {
+          throw primaryErr;
+        }
+      }
       if (!finalized) {
         console.log('[Cluster] Saved cluster is not finalized on-chain, clearing state');
         this._saveClusterRestoreSnapshot(state);
@@ -584,17 +620,17 @@ class ZNode {
       this.clusterWalletName = state.walletName;
       if (this.clusterState && typeof this.clusterState.update === 'function') {
         this.clusterState.update({
-          clusterId: state.clusterId,
+          clusterId: effectiveClusterId,
           members: effectiveMembers,
           finalAddress: onChainAddress,
           finalized: true,
         });
       }
       if (this.p2p && typeof this.p2p.setActiveCluster === 'function') {
-        this.p2p.setActiveCluster(state.clusterId);
+        this.p2p.setActiveCluster(effectiveClusterId);
       }
       console.log('[Cluster] Restored finalized cluster from on-chain state');
-      console.log('  ClusterId: ' + state.clusterId.slice(0, 18) + '...');
+      console.log('  ClusterId: ' + effectiveClusterId.slice(0, 18) + '...');
       console.log('  Monero address: ' + onChainAddress.slice(0, 24) + '...');
       console.log('  Members: ' + effectiveMembers.length);
       return true;

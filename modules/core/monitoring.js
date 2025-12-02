@@ -324,9 +324,14 @@ export async function monitorNetwork(node, DRY_RUN) {
       }
 
       const members = membersLower.map((addr) => ethers.getAddress(addr));
-      const sortedMembersLower = [...membersLower].sort();
-      const addressTypes = Array(clusterSize).fill('address');
-      const clusterId = ethers.keccak256(ethers.solidityPacked(addressTypes, sortedMembersLower));
+      const sortedMembers = [...members].sort((a, b) => {
+        const la = a.toLowerCase();
+        const lb = b.toLowerCase();
+        if (la < lb) return -1;
+        if (la > lb) return 1;
+        return 0;
+      });
+      const clusterId = ethers.solidityPackedKeccak256(['address[]'], [sortedMembers]);
 
       if (
         node._clusterBlacklist &&
