@@ -178,15 +178,20 @@ P2P_BOOTSTRAP_PEERS=/ip4/185.191.116.142/tcp/9000/p2p/16Uiu2HAmDPgaLxg1KfAfPt3uo
 
 # Detect monero-wallet-cli for automatic multisig enabling
 MONERO_WALLET_CLI=""
+MONERO_WALLET_RPC_BIN=""
 if command -v monero-wallet-cli >/dev/null 2>&1; then
   MONERO_WALLET_CLI="$(command -v monero-wallet-cli)"
   echo " Found monero-wallet-cli at $MONERO_WALLET_CLI"
-elif command -v monero-wallet-rpc >/dev/null 2>&1; then
-  RPC_BIN="$(command -v monero-wallet-rpc)"
-  RPC_DIR="$(dirname "$RPC_BIN")"
-  if [ -x "$RPC_DIR/monero-wallet-cli" ]; then
-    MONERO_WALLET_CLI="$RPC_DIR/monero-wallet-cli"
-    echo " Found monero-wallet-cli next to monero-wallet-rpc at $MONERO_WALLET_CLI"
+fi
+if command -v monero-wallet-rpc >/dev/null 2>&1; then
+  MONERO_WALLET_RPC_BIN="$(command -v monero-wallet-rpc)"
+  echo " Found monero-wallet-rpc at $MONERO_WALLET_RPC_BIN"
+  if [ -z "$MONERO_WALLET_CLI" ]; then
+    RPC_DIR="$(dirname "$MONERO_WALLET_RPC_BIN")"
+    if [ -x "$RPC_DIR/monero-wallet-cli" ]; then
+      MONERO_WALLET_CLI="$RPC_DIR/monero-wallet-cli"
+      echo " Found monero-wallet-cli next to monero-wallet-rpc at $MONERO_WALLET_CLI"
+    fi
   fi
 fi
 
@@ -235,7 +240,14 @@ if [ -z "$MONERO_WALLET_CLI" ]; then
   echo "monero-wallet-cli is still missing. Multisig auto-enable will log a warning until you install it."
 fi
 
-if ! command -v monero-wallet-rpc >/dev/null 2>&1; then
+RPC_BIN_CHECK="${MONERO_WALLET_RPC_BIN:-}"
+if [ -n "$RPC_BIN_CHECK" ] && [ -x "$RPC_BIN_CHECK" ]; then
+  :
+elif [ -n "$RPC_BIN_CHECK" ] && command -v "$RPC_BIN_CHECK" >/dev/null 2>&1; then
+  MONERO_WALLET_RPC_BIN="$(command -v "$RPC_BIN_CHECK")"
+elif command -v monero-wallet-rpc >/dev/null 2>&1; then
+  MONERO_WALLET_RPC_BIN="$(command -v monero-wallet-rpc)"
+else
   echo "ERROR: monero-wallet-rpc not found on PATH after automatic install attempt."
   echo "       Please install Monero CLI (monero-wallet-rpc) manually or re-run scripts/setup.sh as root on a machine with internet access."
   exit 1
@@ -251,6 +263,7 @@ PRIVATE_KEY=${PRIVATE_KEY}
 RPC_URL=${RPC_URL}
 MONERO_WALLET_PASSWORD=${MONERO_WALLET_PASSWORD}
 MONERO_WALLET_CLI="$MONERO_WALLET_CLI"
+MONERO_WALLET_RPC_BIN="$MONERO_WALLET_RPC_BIN"
 
 TEST_MODE=0
 DRY_RUN=0

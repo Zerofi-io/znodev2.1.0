@@ -5,17 +5,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 
-if ! command -v monero-wallet-rpc >/dev/null 2>&1; then
-  echo "[start-monero-rpc] ERROR: monero-wallet-rpc binary not found on PATH"
-  echo "[start-monero-rpc] Install Monero CLI (monero-wallet-rpc) and re-run ./scripts/setup.sh"
-  exit 1
-fi
-
 if [ -f "$ROOT_DIR/.env" ]; then
   set -a
   . "$ROOT_DIR/.env"
   set +a
 fi
+
+RPC_BIN="${MONERO_WALLET_RPC_BIN:-}"
+if [ -n "$RPC_BIN" ] && [ -x "$RPC_BIN" ]; then
+  :
+elif [ -n "$RPC_BIN" ] && command -v "$RPC_BIN" >/dev/null 2>&1; then
+  RPC_BIN="$(command -v "$RPC_BIN")"
+elif command -v monero-wallet-rpc >/dev/null 2>&1; then
+  RPC_BIN="$(command -v monero-wallet-rpc)"
+else
+  echo "[start-monero-rpc] ERROR: monero-wallet-rpc binary not found on PATH"
+  echo "[start-monero-rpc] Install Monero CLI (monero-wallet-rpc) and re-run ./scripts/setup.sh"
+  exit 1
+fi
+
+echo "[start-monero-rpc] Using RPC binary: $RPC_BIN"
 
 PORT="${MONERO_RPC_PORT:-18083}"
 BIND="${MONERO_RPC_BIND_IP:-127.0.0.1}"
@@ -46,7 +55,7 @@ fi
 echo "[start-monero-rpc] Starting wallet RPC (daemon: $DAEMON, wallet dir: $WALLET_DIR, port: $PORT)"
 
 RPC_CMD=(
-  monero-wallet-rpc
+  "$RPC_BIN"
   --daemon-address "$DAEMON"
   --rpc-bind-port "$PORT"
   --rpc-bind-ip "$BIND"
