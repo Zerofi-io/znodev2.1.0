@@ -736,6 +736,9 @@ function parseRecipientFromPaymentId(node, paymentId) {
     return null;
   }
 
+  console.log('[Bridge] Resolving paymentId', paymentId, 'pending keys:',
+    node._pendingDepositRequests ? Array.from(node._pendingDepositRequests.keys()).slice(0, 5) : []);
+
   let candidate = paymentId;
   if (candidate.length === 40 && /^[0-9a-fA-F]{40}$/.test(candidate)) {
     candidate = '0x' + candidate;
@@ -948,6 +951,7 @@ export async function registerDepositRequest(node, ethAddress, paymentId) {
   }
 
   node._pendingDepositRequests.set(id, ethAddress);
+  console.log('[Bridge] Registered deposit request', id, '->', ethAddress, 'size:', node._pendingDepositRequests.size);
   saveBridgeState(node);
 
   // Generate integrated address with the payment ID

@@ -13,6 +13,7 @@ fi
 
 PORT="${MONERO_RPC_PORT:-18083}"
 BIND="${MONERO_RPC_BIND_IP:-127.0.0.1}"
+HOME="${HOME:-/root}"
 WALLET_DIR="${MONERO_WALLET_DIR:-$HOME/.monero-wallets}"
 DAEMON="${MONERO_DAEMON_ADDRESS:-xmr-node.cakewallet.com:18081}"
 LOG_FILE="${MONERO_RPC_LOG:-$PWD/monero-rpc.log}"
