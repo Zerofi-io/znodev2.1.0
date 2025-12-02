@@ -204,11 +204,20 @@ class ZNode {
     ];
 
     const bridgeABI = [
-      'function mint(bytes32 clusterId, bytes32 depositId, uint256 amount, bytes signature) external',
+      'function mint(bytes32 clusterId, bytes32 depositId, uint256 amount, bytes[] signatures) external',
       'function burnForXMR(bytes32 clusterId, uint256 amount, string xmrAddress) external',
-      'function isSignatureUsed(bytes signature) external view returns (bool)',
+      'function usedDepositIds(bytes32) external view returns (bool)',
       'event TokensMinted(address indexed user, bytes32 indexed clusterId, bytes32 indexed depositId, uint256 userAmount, uint256 fee)',
       'event TokensBurned(address indexed user, bytes32 indexed clusterId, string xmrAddress, uint256 burnAmount, uint256 fee)',
+    ];
+    const configABI = [
+      'function registry() external view returns (address)',
+      'function staking() external view returns (address)',
+      'function zfiToken() external view returns (address)',
+      'function bridge() external view returns (address)',
+      'function feePool() external view returns (address)',
+      'function zxmrToken() external view returns (address)',
+      'function getConfig() external view returns (address, address, address, address, address, address)',
     ];
 
     const KNOWN_DEFAULTS = {
@@ -228,6 +237,7 @@ class ZNode {
     this._zfiABI = zfiABI;
     this._exchangeCoordinatorABI = exchangeCoordinatorABI;
     this._bridgeABI = bridgeABI;
+    this._configABI = configABI;
 
     this.registry = null;
     this.bridge = null;
@@ -1197,12 +1207,25 @@ class ZNode {
       this.wallet,
     );
 
-    const BRIDGE_ADDR = process.env.BRIDGE_ADDR || (defaults ? defaults.BRIDGE_ADDR : null);
+    let BRIDGE_ADDR = process.env.BRIDGE_ADDR || (defaults ? defaults.BRIDGE_ADDR : null);
+    const CONFIG_ADDR = process.env.CONFIG_ADDR;
+    if (CONFIG_ADDR && CONFIG_ADDR !== ethers.ZeroAddress) {
+      try {
+        this.config = new ethers.Contract(CONFIG_ADDR, this._configABI, this.provider);
+        const bridgeFromConfig = await this.config.bridge();
+        if (bridgeFromConfig && bridgeFromConfig !== ethers.ZeroAddress) {
+          BRIDGE_ADDR = bridgeFromConfig;
+          console.log(`  Config: ${CONFIG_ADDR}`);
+        }
+      } catch (e) {
+        console.log(`  Config: failed to load (${e.message})`);
+      }
+    }
     if (BRIDGE_ADDR && BRIDGE_ADDR !== ethers.ZeroAddress) {
       this.bridge = new ethers.Contract(BRIDGE_ADDR, this._bridgeABI, this.wallet);
       console.log(`  Bridge: ${BRIDGE_ADDR}`);
     } else {
-      console.log('  Bridge: not configured (BRIDGE_ADDR not set)');
+      console.log('  Bridge: not configured');
     }
 
     if (this.p2p && typeof this.p2p.setHeartbeatDomain === 'function') {
