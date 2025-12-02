@@ -30,35 +30,27 @@ export function startBridgeAPI(node) {
     console.log('[BridgeAPI] API server disabled by configuration (BRIDGE_API_ENABLED=0)');
     return;
   }
-
   const port = Number(process.env.BRIDGE_API_PORT || 3002);
-
   node._apiRateLimits = new Map();
   const rateLimitWindowMs = Number(process.env.API_RATE_LIMIT_WINDOW_MS || 60000);
   const rateLimitMaxRequests = Number(process.env.API_RATE_LIMIT_MAX_REQUESTS || 60);
-
   node._apiServer = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Origin', process.env.BRIDGE_API_CORS_ORIGIN || '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
     if (req.method === 'OPTIONS') {
       res.writeHead(200);
       res.end();
       return;
     }
-
     const clientIP = req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown';
     const now = Date.now();
-
     let rateInfo = node._apiRateLimits.get(clientIP);
     if (!rateInfo || now - rateInfo.windowStart > rateLimitWindowMs) {
       rateInfo = { windowStart: now, count: 0 };
     }
-
     rateInfo.count += 1;
     node._apiRateLimits.set(clientIP, rateInfo);
-
     if (node._apiRateLimits.size > 500) {
       const cutoff = now - rateLimitWindowMs;
       for (const [ip, info] of node._apiRateLimits) {
@@ -67,28 +59,21 @@ export function startBridgeAPI(node) {
         }
       }
     }
-
     if (rateInfo.count > rateLimitMaxRequests) {
       res.writeHead(429, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          error: 'Too many requests',
-          retryAfter: Math.ceil((rateInfo.windowStart + rateLimitWindowMs - now) / 1000),
-        }),
-      );
+      res.end(JSON.stringify({
+        error: 'Too many requests',
+        retryAfter: Math.ceil((rateInfo.windowStart + rateLimitWindowMs - now) / 1000),
+      }));
       return;
     }
-
     const url = new URL(req.url, `http://${req.headers.host}`);
     const pathname = url.pathname;
-
     handleAPIRequest(node, req, res, pathname, url.searchParams);
   });
-
   node._apiServer.listen(port, () => {
     console.log(`[BridgeAPI] HTTP API server listening on port ${port}`);
   });
-
   if (!node._apiRateLimitCleanupTimer) {
     node._apiRateLimitCleanupTimer = setInterval(() => {
       if (!node._apiRateLimits) return;
@@ -100,7 +85,6 @@ export function startBridgeAPI(node) {
       }
     }, 60000);
   }
-
   node._apiServer.on('error', (e) => {
     console.log('[BridgeAPI] Server error:', e.message || String(e));
   });
@@ -129,45 +113,30 @@ async function handleAPIRequest(node, req, res, pathname, params) {
       };
       const p2pStatus = {
         connected: !!(node.p2p && node.p2p.node),
-        connectedPeers:
-          node.p2p && typeof node.p2p._connectedPeers === 'number' ? node.p2p._connectedPeers : 0,
+        connectedPeers: node.p2p && typeof node.p2p._connectedPeers === 'number' ? node.p2p._connectedPeers : 0,
       };
       const cluster = {
         activeClusterId: node._activeClusterId || null,
         clusterFinalized: !!node._clusterFinalized,
         clusterMembers: node._clusterMembers ? node._clusterMembers.length : 0,
       };
-
       let status = 'ok';
       if (circuit.open || moneroHealth === MoneroHealth.QUARANTINED) {
         status = 'error';
       } else if (moneroHealth !== MoneroHealth.HEALTHY || !p2pStatus.connected) {
         status = 'degraded';
       }
-
-      return jsonResponse(res, 200, {
-        status,
-        monero: {
-          health: moneroHealth,
-          errors: node.moneroErrorCounts || {},
-        },
-        rpcCircuitBreaker: circuit,
-        p2p: p2pStatus,
-        cluster,
-      });
+      return jsonResponse(res, 200, { status, monero: { health: moneroHealth, errors: node.moneroErrorCounts || {} }, rpcCircuitBreaker: circuit, p2p: p2pStatus, cluster });
     }
-
     if (pathname === '/metrics' && req.method === 'GET') {
       const clusterMetrics = metrics.toJSON();
       const loggerMetrics = consoleLogger ? consoleLogger.getMetrics() : null;
       return jsonResponse(res, 200, { metrics: clusterMetrics, logger: loggerMetrics });
     }
-
     if (pathname === '/cluster-status' && req.method === 'GET') {
       const status = await getClusterStatus(node);
       return jsonResponse(res, 200, status);
     }
-
     if (pathname === '/health' && req.method === 'GET') {
       return jsonResponse(res, 200, {
         status: 'ok',
@@ -176,7 +145,6 @@ async function handleAPIRequest(node, req, res, pathname, params) {
         bridgeEnabled: isBridgeEnabled(),
       });
     }
-
     if (pathname === '/bridge/info' && req.method === 'GET') {
       return jsonResponse(res, 200, {
         multisigAddress: node._clusterFinalAddress || null,
@@ -187,20 +155,16 @@ async function handleAPIRequest(node, req, res, pathname, params) {
         minConfirmations: Number(process.env.MIN_DEPOSIT_CONFIRMATIONS || 10),
       });
     }
-
     if (pathname === '/bridge/cluster/members' && req.method === 'GET') {
       const members = node._clusterMembers || [];
       return jsonResponse(res, 200, { members });
     }
-
     if (pathname === '/bridge/deposit/request' && req.method === 'POST') {
       const body = await readRequestBody(req);
       const { ethAddress } = body;
-
       if (!ethAddress || !ethers.isAddress(ethAddress)) {
         return jsonResponse(res, 400, { error: 'Invalid ethAddress' });
       }
-
       try {
         const result = await registerDepositRequest(node, ethAddress);
         return jsonResponse(res, 200, result);
@@ -208,65 +172,39 @@ async function handleAPIRequest(node, req, res, pathname, params) {
         return jsonResponse(res, 503, { error: e.message || 'Deposit routing unavailable' });
       }
     }
-
     if (pathname.startsWith('/bridge/deposit/status/') && req.method === 'GET') {
       const txid = pathname.split('/').pop();
-
       if (!txid || txid.length < 10) {
         return jsonResponse(res, 400, { error: 'Invalid txid' });
       }
-
       const signature = getMintSignature(node, txid);
-
       if (signature) {
-        return jsonResponse(res, 200, {
-          status: 'ready',
-          ...signature,
-        });
+        return jsonResponse(res, 200, { status: 'ready', ...signature });
       }
-
       if (node._processedDeposits && node._processedDeposits.has(txid)) {
-        return jsonResponse(res, 200, {
-          status: 'processed',
-          message: 'Deposit processed but no signature available (may have failed consensus)',
-        });
+        return jsonResponse(res, 200, { status: 'processed', message: 'Deposit processed but no signature available (may have failed consensus)' });
       }
-
-      return jsonResponse(res, 200, {
-        status: 'pending',
-        message: 'Deposit not yet detected or confirmed',
-      });
+      return jsonResponse(res, 200, { status: 'pending', message: 'Deposit not yet detected or confirmed' });
     }
-
     if (pathname === '/bridge/signatures' && req.method === 'GET') {
       const signatures = getAllPendingSignatures(node);
       return jsonResponse(res, 200, { signatures });
     }
-
     if (pathname.startsWith('/bridge/withdrawal/status/') && req.method === 'GET') {
       const txHash = pathname.split('/').pop();
-
       if (!txHash || txHash.length < 10) {
         return jsonResponse(res, 400, { error: 'Invalid txHash' });
       }
-
       const status = getWithdrawalStatus(node, txHash);
-
       if (status) {
         return jsonResponse(res, 200, { status: 'found', ...status });
       }
-
-      return jsonResponse(res, 200, {
-        status: 'not_found',
-        message: 'Withdrawal not yet detected or processed',
-      });
+      return jsonResponse(res, 200, { status: 'not_found', message: 'Withdrawal not yet detected or processed' });
     }
-
     if (pathname === '/bridge/withdrawals' && req.method === 'GET') {
       const withdrawals = getAllPendingWithdrawals(node);
       return jsonResponse(res, 200, { withdrawals });
     }
-
     return jsonResponse(res, 404, { error: 'Not found' });
   } catch (e) {
     console.log('[BridgeAPI] Request error:', e.message || String(e));
@@ -277,31 +215,19 @@ async function handleAPIRequest(node, req, res, pathname, params) {
 async function getClusterStatus(node) {
   const now = Date.now();
   const moneroHealth = node.moneroHealth || MoneroHealth.HEALTHY;
-  const stateSummary =
-    node.stateMachine && typeof node.stateMachine.getSummary === 'function'
-      ? node.stateMachine.getSummary()
-      : null;
+  const stateSummary = node.stateMachine && typeof node.stateMachine.getSummary === 'function' ? node.stateMachine.getSummary() : null;
   const clusterState = node.clusterState && node.clusterState.state ? node.clusterState.state : null;
-  const clusterId =
-    (clusterState && clusterState.clusterId) || node._activeClusterId || null;
-  const finalized =
-    clusterState && typeof clusterState.finalized === 'boolean'
-      ? clusterState.finalized
-      : !!node._clusterFinalized;
-  const finalAddress =
-    (clusterState && clusterState.finalAddress) || node._clusterFinalAddress || null;
+  const clusterId = (clusterState && clusterState.clusterId) || node._activeClusterId || null;
+  const finalized = clusterState && typeof clusterState.finalized === 'boolean' ? clusterState.finalized : !!node._clusterFinalized;
+  const finalAddress = (clusterState && clusterState.finalAddress) || node._clusterFinalAddress || null;
   const selfAddr = node.wallet && node.wallet.address ? node.wallet.address.toLowerCase() : null;
-  const membersRaw =
-    clusterState && Array.isArray(clusterState.members)
-      ? clusterState.members
-      : node._clusterMembers || [];
+  const membersRaw = clusterState && Array.isArray(clusterState.members) ? clusterState.members : node._clusterMembers || [];
   const members = [];
   const nowSec = Math.floor(now / 1000);
   const hbRaw = process.env.HEARTBEAT_INTERVAL;
   const hbParsed = hbRaw != null ? Number(hbRaw) : NaN;
   const hbIntervalSec = Number.isFinite(hbParsed) && hbParsed > 0 ? hbParsed : 30;
   const staleThresholdSec = hbIntervalSec * 5;
-
   for (const addr of membersRaw) {
     let lastHeartbeatAgoSec = null;
     let status = 'unknown';
@@ -318,127 +244,42 @@ async function getClusterStatus(node) {
         }
       } catch (_ignored) {}
     }
-    members.push({
-      address: addr,
-      isSelf: selfAddr ? addr.toLowerCase() === selfAddr : false,
-      lastHeartbeatAgoSec,
-      status,
-    });
+    members.push({ address: addr, isSelf: selfAddr ? addr.toLowerCase() === selfAddr : false, lastHeartbeatAgoSec, status });
   }
-
-  const cooldownUntil =
-    (clusterState && clusterState.cooldownUntil) || node._clusterCooldownUntil || null;
-  const cooldownRemainingSec =
-    cooldownUntil && cooldownUntil > now
-      ? Math.floor((cooldownUntil - now) / 1000)
-      : 0;
-
-  const lastFailureAt =
-    (clusterState && clusterState.lastFailureAt) || node._lastClusterFailureAt || null;
-  const lastFailureReason =
-    (clusterState && clusterState.lastFailureReason) || node._lastClusterFailureReason || null;
-
+  const cooldownUntil = (clusterState && clusterState.cooldownUntil) || node._clusterCooldownUntil || null;
+  const cooldownRemainingSec = cooldownUntil && cooldownUntil > now ? Math.floor((cooldownUntil - now) / 1000) : 0;
+  const lastFailureAt = (clusterState && clusterState.lastFailureAt) || node._lastClusterFailureAt || null;
+  const lastFailureReason = (clusterState && clusterState.lastFailureReason) || node._lastClusterFailureReason || null;
   const p2pConnected = !!(node.p2p && node.p2p.node);
-  const p2pConnectedPeers =
-    node.p2p && typeof node.p2p._connectedPeers === 'number'
-      ? node.p2p._connectedPeers
-      : 0;
-  const lastHeartbeatAgoSec =
-    node._lastHeartbeatAt && node._lastHeartbeatAt > 0
-      ? Math.floor((now - node._lastHeartbeatAt) / 1000)
-      : null;
-
-  const allMembersHealthy =
-    members.length > 0 && members.every((m) => m.status === 'healthy');
-
-  const currentState =
-    stateSummary && stateSummary.state
-      ? stateSummary.state
-      : node.stateMachine && node.stateMachine.currentState
-      ? node.stateMachine.currentState
-      : null;
-
-  const eligibleForBridging =
-    !!clusterId &&
-    finalized &&
-    currentState === 'ACTIVE' &&
-    moneroHealth === MoneroHealth.HEALTHY &&
-    p2pConnected &&
-    allMembersHealthy &&
-    isBridgeEnabled();
-
+  const p2pConnectedPeers = node.p2p && typeof node.p2p._connectedPeers === 'number' ? node.p2p._connectedPeers : 0;
+  const lastHeartbeatAgoSec = node._lastHeartbeatAt && node._lastHeartbeatAt > 0 ? Math.floor((now - node._lastHeartbeatAt) / 1000) : null;
+  const allMembersHealthy = members.length > 0 && members.every((m) => m.status === 'healthy');
+  const currentState = stateSummary && stateSummary.state ? stateSummary.state : node.stateMachine && node.stateMachine.currentState ? node.stateMachine.currentState : null;
+  const eligibleForBridging = !!clusterId && finalized && currentState === 'ACTIVE' && moneroHealth === MoneroHealth.HEALTHY && p2pConnected && allMembersHealthy && isBridgeEnabled();
   const syncMinVisibility = Number(process.env.MIN_P2P_VISIBILITY || members.length || 0);
-
   const jitterRawEnv = process.env.NON_COORDINATOR_JITTER_MS;
   const jitterParsedEnv = jitterRawEnv != null ? Number(jitterRawEnv) : NaN;
-  const nonCoordinatorJitterMs =
-    Number.isFinite(jitterParsedEnv) && jitterParsedEnv >= 0 ? jitterParsedEnv : 5000;
-
+  const nonCoordinatorJitterMs = Number.isFinite(jitterParsedEnv) && jitterParsedEnv >= 0 ? jitterParsedEnv : 5000;
   const warmupRawEnv = process.env.P2P_WARMUP_MS;
   const warmupParsedEnv = warmupRawEnv != null ? Number(warmupRawEnv) : NaN;
-  const p2pWarmupMs =
-    Number.isFinite(warmupParsedEnv) && warmupParsedEnv >= 0 ? warmupParsedEnv : 30000;
-
+  const p2pWarmupMs = Number.isFinite(warmupParsedEnv) && warmupParsedEnv >= 0 ? warmupParsedEnv : 30000;
   const readyRawEnv = process.env.READY_BARRIER_TIMEOUT_MS;
   const readyParsedEnv = readyRawEnv != null ? Number(readyRawEnv) : NaN;
-  const readyBarrierTimeoutMs =
-    Number.isFinite(readyParsedEnv) && readyParsedEnv > 0 ? readyParsedEnv : 300000;
-
+  const readyBarrierTimeoutMs = Number.isFinite(readyParsedEnv) && readyParsedEnv > 0 ? readyParsedEnv : 300000;
   const attemptsRawEnv = process.env.LIVENESS_ATTEMPTS;
   const attemptsParsedEnv = attemptsRawEnv != null ? Number(attemptsRawEnv) : NaN;
-  const livenessAttempts =
-    Number.isFinite(attemptsParsedEnv) && attemptsParsedEnv > 0
-      ? Math.floor(attemptsParsedEnv)
-      : 3;
-
+  const livenessAttempts = Number.isFinite(attemptsParsedEnv) && attemptsParsedEnv > 0 ? Math.floor(attemptsParsedEnv) : 3;
   const intervalRawEnv = process.env.LIVENESS_ATTEMPT_INTERVAL_MS;
   const intervalParsedEnv = intervalRawEnv != null ? Number(intervalRawEnv) : NaN;
-  const livenessAttemptIntervalMs =
-    Number.isFinite(intervalParsedEnv) && intervalParsedEnv >= 0 ? intervalParsedEnv : 30000;
-
+  const livenessAttemptIntervalMs = Number.isFinite(intervalParsedEnv) && intervalParsedEnv >= 0 ? intervalParsedEnv : 30000;
   return {
     clusterState: currentState,
-    timeInStateMs:
-      stateSummary && typeof stateSummary.timeInState === 'number'
-        ? stateSummary.timeInState
-        : node.stateMachine && typeof node.stateMachine.timeInState === 'number'
-        ? node.stateMachine.timeInState
-        : null,
+    timeInStateMs: stateSummary && typeof stateSummary.timeInState === 'number' ? stateSummary.timeInState : node.stateMachine && typeof node.stateMachine.timeInState === 'number' ? node.stateMachine.timeInState : null,
     eligibleForBridging,
-    syncConfig: {
-      minP2PVisibility: syncMinVisibility,
-      nonCoordinatorJitterMs,
-      p2pWarmupMs,
-      readyBarrierTimeoutMs,
-      livenessAttempts,
-      livenessAttemptIntervalMs,
-    },
-    cluster: {
-      id: clusterId,
-      finalized,
-      finalAddress,
-      members,
-      size: members.length,
-      coordinator:
-        clusterState && clusterState.coordinator ? clusterState.coordinator : null,
-      coordinatorIndex:
-        clusterState && typeof clusterState.coordinatorIndex === 'number'
-          ? clusterState.coordinatorIndex
-          : null,
-      cooldownUntil,
-      cooldownRemainingSec,
-      lastFailureAt,
-      lastFailureReason,
-    },
-    monero: {
-      health: moneroHealth,
-      errors: node.moneroErrorCounts || {},
-    },
-    p2p: {
-      connected: p2pConnected,
-      connectedPeers: p2pConnectedPeers,
-      lastHeartbeatAgoSec,
-    },
+    syncConfig: { minP2PVisibility: syncMinVisibility, nonCoordinatorJitterMs, p2pWarmupMs, readyBarrierTimeoutMs, livenessAttempts, livenessAttemptIntervalMs },
+    cluster: { id: clusterId, finalized, finalAddress, members, size: members.length, coordinator: clusterState && clusterState.coordinator ? clusterState.coordinator : null, coordinatorIndex: clusterState && typeof clusterState.coordinatorIndex === 'number' ? clusterState.coordinatorIndex : null, cooldownUntil, cooldownRemainingSec, lastFailureAt, lastFailureReason },
+    monero: { health: moneroHealth, errors: node.moneroErrorCounts || {} },
+    p2p: { connected: p2pConnected, connectedPeers: p2pConnectedPeers, lastHeartbeatAgoSec },
   };
 }
 
@@ -450,15 +291,10 @@ function jsonResponse(res, status, data) {
 function readRequestBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', (chunk) => {
-      body += chunk;
-    });
+    req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
-      try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch {
-        resolve({});
-      }
+      try { resolve(body ? JSON.parse(body) : {}); }
+      catch { resolve({}); }
     });
     req.on('error', reject);
   });
@@ -467,34 +303,25 @@ function readRequestBody(req) {
 function getBridgeStatePath() {
   const homeDir = process.env.HOME || process.cwd();
   const dataDir = process.env.BRIDGE_DATA_DIR || path.join(homeDir, '.znode-bridge');
-  try {
-    fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  } catch (_ignored) {}
+  try { fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 }); }
+  catch (_ignored) {}
   return path.join(dataDir, 'bridge_state.json');
 }
 
 function loadBridgeState(node) {
   try {
     const statePath = getBridgeStatePath();
-    if (!fs.existsSync(statePath)) {
-      return;
-    }
-
+    if (!fs.existsSync(statePath)) return;
     const data = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-
     if (Array.isArray(data.processedDeposits)) {
       node._processedDeposits = new Set(data.processedDeposits);
       console.log(`[Bridge] Loaded ${node._processedDeposits.size} processed deposits from disk`);
     }
-
     if (data.pendingMintSignatures && typeof data.pendingMintSignatures === 'object') {
       node._pendingMintSignatures = new Map(Object.entries(data.pendingMintSignatures));
-      console.log(
-        `[Bridge] Loaded ${node._pendingMintSignatures.size} pending mint signatures from disk`,
-      );
+      console.log(`[Bridge] Loaded ${node._pendingMintSignatures.size} pending mint signatures from disk`);
     }
-
-    if (data.pendingDepositRequests && typeof data.pendingDepositRequests === "object") {
+    if (data.pendingDepositRequests && typeof data.pendingDepositRequests === 'object') {
       const map = new Map();
       for (const [k, v] of Object.entries(data.pendingDepositRequests)) {
         if (v && typeof v === 'object' && typeof v.ethAddress === 'string') {
@@ -506,7 +333,6 @@ function loadBridgeState(node) {
       node._pendingDepositRequests = map;
       console.log(`[Bridge] Loaded ${node._pendingDepositRequests.size} pending deposit requests from disk`);
     }
-
     if (Array.isArray(data.processedWithdrawals)) {
       node._processedWithdrawals = new Set(data.processedWithdrawals);
       console.log(`[Bridge] Loaded ${node._processedWithdrawals.size} processed withdrawals from disk`);
@@ -519,24 +345,14 @@ function loadBridgeState(node) {
 function saveBridgeState(node) {
   try {
     const statePath = getBridgeStatePath();
-
     const data = {
       savedAt: Date.now(),
       processedDeposits: node._processedDeposits ? Array.from(node._processedDeposits) : [],
-      pendingMintSignatures: node._pendingMintSignatures
-        ? Object.fromEntries(node._pendingMintSignatures)
-        : {},
-      pendingDepositRequests: node._pendingDepositRequests
-        ? Object.fromEntries(node._pendingDepositRequests)
-        : {},
-      processedWithdrawals: node._processedWithdrawals
-        ? Array.from(node._processedWithdrawals)
-        : [],
+      pendingMintSignatures: node._pendingMintSignatures ? Object.fromEntries(node._pendingMintSignatures) : {},
+      pendingDepositRequests: node._pendingDepositRequests ? Object.fromEntries(node._pendingDepositRequests) : {},
+      processedWithdrawals: node._processedWithdrawals ? Array.from(node._processedWithdrawals) : [],
     };
-
-    fs.writeFileSync(statePath, JSON.stringify(data, null, 2), {
-      mode: 0o600,
-    });
+    fs.writeFileSync(statePath, JSON.stringify(data, null, 2), { mode: 0o600 });
   } catch (e) {
     console.log('[Bridge] Failed to save bridge state:', e.message || String(e));
   }
@@ -544,32 +360,21 @@ function saveBridgeState(node) {
 
 function startBridgeStateSaver(node) {
   const saveIntervalMs = Number(process.env.BRIDGE_STATE_SAVE_INTERVAL_MS || 60000);
-
-  if (node._bridgeStateSaverTimer) {
-    clearInterval(node._bridgeStateSaverTimer);
-  }
-
-  node._bridgeStateSaverTimer = setInterval(() => {
-    saveBridgeState(node);
-  }, saveIntervalMs);
+  if (node._bridgeStateSaverTimer) clearInterval(node._bridgeStateSaverTimer);
+  node._bridgeStateSaverTimer = setInterval(() => { saveBridgeState(node); }, saveIntervalMs);
 }
 
 function cleanupExpiredSignatures(node) {
-  if (!node._pendingMintSignatures || node._pendingMintSignatures.size === 0) {
-    return;
-  }
-
+  if (!node._pendingMintSignatures || node._pendingMintSignatures.size === 0) return;
   const ttlMs = Number(process.env.MINT_SIGNATURE_TTL_MS || 86400000);
   const now = Date.now();
   let expiredCount = 0;
-
   for (const [txid, data] of node._pendingMintSignatures) {
     if (data.timestamp && now - data.timestamp > ttlMs) {
       node._pendingMintSignatures.delete(txid);
       expiredCount += 1;
     }
   }
-
   if (expiredCount > 0) {
     console.log(`[Bridge] Cleaned up ${expiredCount} expired mint signatures`);
     saveBridgeState(node);
@@ -577,12 +382,8 @@ function cleanupExpiredSignatures(node) {
 }
 
 function cleanupOldProcessedDeposits(node) {
-  if (!node._processedDeposits || node._processedDeposits.size === 0) {
-    return;
-  }
-
+  if (!node._processedDeposits || node._processedDeposits.size === 0) return;
   const maxEntries = Number(process.env.MAX_PROCESSED_DEPOSITS || 10000);
-
   if (node._processedDeposits.size > maxEntries) {
     const arr = Array.from(node._processedDeposits);
     const toRemove = arr.length - maxEntries;
@@ -596,11 +397,7 @@ function cleanupOldProcessedDeposits(node) {
 
 function startCleanupTimer(node) {
   const cleanupIntervalMs = Number(process.env.BRIDGE_CLEANUP_INTERVAL_MS || 3600000);
-
-  if (node._bridgeCleanupTimer) {
-    clearInterval(node._bridgeCleanupTimer);
-  }
-
+  if (node._bridgeCleanupTimer) clearInterval(node._bridgeCleanupTimer);
   node._bridgeCleanupTimer = setInterval(() => {
     cleanupExpiredSignatures(node);
     cleanupOldProcessedDeposits(node);
@@ -608,54 +405,33 @@ function startCleanupTimer(node) {
 }
 
 export async function startDepositMonitor(node) {
-  if (node._depositMonitorRunning) {
-    return;
-  }
-
+  if (node._depositMonitorRunning) return;
   const bridgeEnabled = isBridgeEnabled();
   if (!bridgeEnabled) {
     console.log('[Bridge] Deposit monitoring disabled by configuration (BRIDGE_ENABLED=0)');
     return;
   }
-
   if (!node._clusterFinalized || !node._clusterFinalAddress) {
     console.log('[Bridge] Cannot start deposit monitor: cluster not finalized');
     return;
   }
-
   if (!node.bridge) {
     console.log('[Bridge] Cannot start deposit monitor: bridge contract not configured');
     return;
   }
-
   loadBridgeState(node);
-
   node._depositMonitorRunning = true;
   const pollIntervalMs = Number(process.env.DEPOSIT_POLL_INTERVAL_MS || 30000);
   const minConfirmations = Number(process.env.MIN_DEPOSIT_CONFIRMATIONS || 10);
-
-  console.log(
-    `[Bridge] Starting deposit monitor (poll: ${pollIntervalMs / 1000}s, minConf: ${minConfirmations})`,
-  );
-
+  console.log(`[Bridge] Starting deposit monitor (poll: ${pollIntervalMs / 1000}s, minConf: ${minConfirmations})`);
   const poll = async () => {
-    if (!node._depositMonitorRunning || !node._clusterFinalized) {
-      return;
-    }
-
-    try {
-      await checkForDeposits(node, minConfirmations);
-    } catch (e) {
-      console.log('[Bridge] Deposit check error:', e.message || String(e));
-    }
+    if (!node._depositMonitorRunning || !node._clusterFinalized) return;
+    try { await checkForDeposits(node, minConfirmations); }
+    catch (e) { console.log('[Bridge] Deposit check error:', e.message || String(e)); }
   };
-
   await poll();
-
   node._depositMonitorTimer = setInterval(poll, pollIntervalMs);
-
   startBridgeStateSaver(node);
-
   startCleanupTimer(node);
 }
 
@@ -668,107 +444,109 @@ export function stopDepositMonitor(node) {
   console.log('[Bridge] Deposit monitor stopped');
 }
 
-async function syncDepositRequests(node) {
-  if (!node.p2p || !node.staking) {
-    return;
+const DEPOSIT_REQUEST_ROUND = 9700;
+const GLOBAL_BRIDGE_CLUSTER_ID = 'GLOBAL_BRIDGE';
+const GLOBAL_BRIDGE_SESSION = 'bridge-global';
+const MINT_SIGNATURE_ROUND = 9800;
+const MINT_SIGNATURE_COLLECT_ROUND = 9801;
+const REQUIRED_MINT_SIGNATURES = 7;
+const MINT_SIGNATURE_TIMEOUT_MS = Number(process.env.MINT_SIGNATURE_TIMEOUT_MS || 120000);
+const MAX_STAKE_QUERY_FAILURES = 3;
+
+async function isNodeStaked(node, address) {
+  if (!node.staking) return false;
+  try {
+    const info = await node.staking.getNodeInfo(address);
+    const stakedAmount = BigInt(info[0].toString());
+    const active = info[3];
+    return active && stakedAmount >= BigInt('1000000000000000000000000');
+  } catch (e) {
+    return false;
   }
-  let members = [];
+}
+
+function signDepositRequestPayload(wallet, paymentId, ethAddress, clusterId, requestKey) {
+  const message = ethers.solidityPackedKeccak256(
+    ['string', 'string', 'address', 'bytes32', 'bytes32'],
+    ['deposit-request', paymentId, ethAddress, clusterId || ethers.ZeroHash, requestKey || ethers.ZeroHash]
+  );
+  return wallet.signMessage(ethers.getBytes(message));
+}
+
+function verifyDepositRequestSignature(paymentId, ethAddress, clusterId, requestKey, signature, expectedSigner) {
   try {
-    members = await node.staking.getActiveNodes();
-  } catch (e) {}
-  try {
-    const payloads = await node.p2p.getPeerPayloads(
-      GLOBAL_BRIDGE_CLUSTER_ID,
-      GLOBAL_BRIDGE_SESSION,
-      DEPOSIT_REQUEST_ROUND,
-      members || [],
+    const message = ethers.solidityPackedKeccak256(
+      ['string', 'string', 'address', 'bytes32', 'bytes32'],
+      ['deposit-request', paymentId, ethAddress, clusterId || ethers.ZeroHash, requestKey || ethers.ZeroHash]
     );
-    if (!payloads || payloads.length === 0) {
-      return;
-    }
-    if (!node._pendingDepositRequests) {
-      node._pendingDepositRequests = new Map();
-    }
+    const recovered = ethers.verifyMessage(ethers.getBytes(message), signature);
+    return recovered.toLowerCase() === expectedSigner.toLowerCase();
+  } catch (e) {
+    return false;
+  }
+}
+
+async function syncDepositRequests(node) {
+  if (!node.p2p || !node.staking) return;
+  let members = [];
+  try { members = await node.staking.getActiveNodes(); }
+  catch (e) {}
+  try {
+    const payloads = await node.p2p.getPeerPayloads(GLOBAL_BRIDGE_CLUSTER_ID, GLOBAL_BRIDGE_SESSION, DEPOSIT_REQUEST_ROUND, members || []);
+    if (!payloads || payloads.length === 0) return;
+    if (!node._pendingDepositRequests) node._pendingDepositRequests = new Map();
     let updated = false;
     for (const payload of payloads) {
       try {
         const data = JSON.parse(payload);
         if (!data || data.type !== 'deposit-request') continue;
-        if (!data.paymentId || !data.ethAddress) continue;
+        if (!data.paymentId || !data.ethAddress || !data.signer || !data.signature) continue;
         if (!ethers.isAddress(data.ethAddress)) continue;
+        if (!verifyDepositRequestSignature(data.paymentId, data.ethAddress, data.clusterId, data.requestKey, data.signature, data.signer)) continue;
+        const signerStaked = await isNodeStaked(node, data.signer);
+        if (!signerStaked) continue;
         if (node._activeClusterId && data.clusterId && typeof data.clusterId === 'string') {
-          if (data.clusterId.toLowerCase() !== node._activeClusterId.toLowerCase()) {
-            continue;
-          }
+          if (data.clusterId.toLowerCase() !== node._activeClusterId.toLowerCase()) continue;
         }
         if (!node._pendingDepositRequests.has(data.paymentId)) {
-          node._pendingDepositRequests.set(data.paymentId, {
-            ethAddress: data.ethAddress,
-            clusterId: data.clusterId || null,
-            requestKey: data.requestKey || null,
-          });
+          node._pendingDepositRequests.set(data.paymentId, { ethAddress: data.ethAddress, clusterId: data.clusterId || null, requestKey: data.requestKey || null });
           updated = true;
         }
       } catch (e) {}
     }
-    if (updated) {
-      saveBridgeState(node);
-    }
+    if (updated) saveBridgeState(node);
   } catch (e) {}
 }
 
 async function checkForDeposits(node, minConfirmations) {
   await syncDepositRequests(node);
-  if (!node.monero) {
-    return;
-  }
-
-  try {
-    await node.monero.refresh();
-  } catch (_ignored) {}
-
+  if (!node.monero) return;
+  try { await node.monero.refresh(); }
+  catch (_ignored) {}
   let deposits;
-  try {
-    deposits = await node.monero.getConfirmedDeposits(minConfirmations);
-  } catch (e) {
+  try { deposits = await node.monero.getConfirmedDeposits(minConfirmations); }
+  catch (e) {
     console.log('[Bridge] Failed to get deposits:', e.message || String(e));
     return;
   }
-
-  if (!deposits || deposits.length === 0) {
-    return;
-  }
-
+  if (!deposits || deposits.length === 0) return;
   for (const deposit of deposits) {
     const txid = deposit.txid;
-
-    if (node._processedDeposits && node._processedDeposits.has(txid)) {
-      continue;
-    }
-
-    if (node._pendingMintSignatures && node._pendingMintSignatures.has(txid)) {
-      continue;
-    }
-
+    if (node._processedDeposits && node._processedDeposits.has(txid)) continue;
+    if (node._pendingMintSignatures && node._pendingMintSignatures.has(txid)) continue;
     console.log(`[Bridge] New deposit detected: ${txid}`);
     console.log(`  Amount: ${deposit.amount / 1e12} XMR`);
     console.log(`  Confirmations: ${deposit.confirmations}`);
     console.log(`  Payment ID: ${deposit.paymentId || 'none'}`);
-
     const recipient = parseRecipientFromPaymentId(node, deposit.paymentId);
-
     if (!recipient) {
       console.log(`[Bridge] Skipping deposit ${txid}: no valid recipient in payment ID`);
-      if (!node._processedDeposits) {
-        node._processedDeposits = new Set();
-      }
+      if (!node._processedDeposits) node._processedDeposits = new Set();
       node._processedDeposits.add(txid);
       continue;
     }
-
     try {
       const consensusResult = await runDepositConsensus(node, deposit, recipient);
-
       if (consensusResult.success) {
         console.log(`[Bridge] Consensus reached for deposit ${txid}`);
         await generateAndShareMintSignature(node, deposit, recipient);
@@ -779,45 +557,27 @@ async function checkForDeposits(node, minConfirmations) {
     } catch (e) {
       console.log(`[Bridge] Consensus error for deposit ${txid}:`, e.message || String(e));
     }
-
-    if (!node._processedDeposits) {
-      node._processedDeposits = new Set();
-    }
+    if (!node._processedDeposits) node._processedDeposits = new Set();
     node._processedDeposits.add(txid);
-
     saveBridgeState(node);
   }
 }
 
 function parseRecipientFromPaymentId(node, paymentId) {
-  if (!paymentId || paymentId.length === 0) {
-    return null;
-  }
-
-  console.log('[Bridge] Resolving paymentId', paymentId, 'pending keys:',
-    node._pendingDepositRequests ? Array.from(node._pendingDepositRequests.keys()).slice(0, 5) : []);
-
+  if (!paymentId || paymentId.length === 0) return null;
   let candidate = paymentId;
   if (candidate.length === 40 && /^[0-9a-fA-F]{40}$/.test(candidate)) {
     candidate = '0x' + candidate;
   }
-
   if (candidate.length === 42 && candidate.startsWith('0x')) {
-    try {
-      return ethers.getAddress(candidate);
-    } catch (_ignored) {}
+    try { return ethers.getAddress(candidate); }
+    catch (_ignored) {}
   }
-
   if (node._pendingDepositRequests && node._pendingDepositRequests.has(paymentId)) {
     const entry = node._pendingDepositRequests.get(paymentId);
-    if (entry && typeof entry === 'object' && typeof entry.ethAddress === 'string') {
-      return entry.ethAddress;
-    }
-    if (typeof entry === 'string') {
-      return entry;
-    }
+    if (entry && typeof entry === 'object' && typeof entry.ethAddress === 'string') return entry.ethAddress;
+    if (typeof entry === 'string') return entry;
   }
-
   return null;
 }
 
@@ -825,36 +585,15 @@ async function runDepositConsensus(node, deposit, recipient) {
   if (!node.p2p || !node._clusterMembers || node._clusterMembers.length === 0) {
     return { success: false, reason: 'no cluster members' };
   }
-
   const clusterId = node._activeClusterId;
   const sessionId = node._sessionId || 'bridge';
-
-  const depositHash = ethers.keccak256(
-    ethers.AbiCoder.defaultAbiCoder().encode(
-      ['string', 'uint256', 'uint256', 'address'],
-      [deposit.txid, deposit.amount, deposit.blockHeight, recipient],
-    ),
-  );
-
+  const depositHash = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['string', 'uint256', 'uint256', 'address'], [deposit.txid, deposit.amount, deposit.blockHeight, recipient]));
   console.log(`[Bridge] Running PBFT consensus for deposit ${deposit.txid.slice(0, 16)}...`);
-  console.log(`  Hash: ${depositHash.slice(0, 18)}...`);
-
   const topic = `deposit-${deposit.txid.slice(0, 16)}`;
   const timeoutMs = Number(process.env.DEPOSIT_CONSENSUS_TIMEOUT_MS || 120000);
-
   try {
-    const result = await node.p2p.runConsensus(
-      clusterId,
-      sessionId,
-      topic,
-      depositHash,
-      node._clusterMembers,
-      timeoutMs,
-    );
-
-    if (result && result.success) {
-      return { success: true };
-    }
+    const result = await node.p2p.runConsensus(clusterId, sessionId, topic, depositHash, node._clusterMembers, timeoutMs);
+    if (result && result.success) return { success: true };
     return { success: false, reason: result ? result.reason : 'unknown' };
   } catch (e) {
     return { success: false, reason: e.message || String(e) };
@@ -862,22 +601,10 @@ async function runDepositConsensus(node, deposit, recipient) {
 }
 
 function isClusterCoordinator(node) {
-  if (!node._clusterMembers || node._clusterMembers.length === 0) {
-    return false;
-  }
-
+  if (!node._clusterMembers || node._clusterMembers.length === 0) return false;
   const sorted = [...node._clusterMembers].map((a) => a.toLowerCase()).sort();
-
   return sorted[0] === node.wallet.address.toLowerCase();
 }
-
-const DEPOSIT_REQUEST_ROUND = 9700;
-const GLOBAL_BRIDGE_CLUSTER_ID = 'GLOBAL_BRIDGE';
-const GLOBAL_BRIDGE_SESSION = 'bridge-global';
-const MINT_SIGNATURE_ROUND = 9800;
-const MINT_SIGNATURE_COLLECT_ROUND = 9801;
-const REQUIRED_MINT_SIGNATURES = 7;
-const MINT_SIGNATURE_TIMEOUT_MS = Number(process.env.MINT_SIGNATURE_TIMEOUT_MS || 120000);
 
 async function generateAndShareMintSignature(node, deposit, recipient) {
   if (!node.wallet) {
@@ -887,19 +614,10 @@ async function generateAndShareMintSignature(node, deposit, recipient) {
   const depositId = ethers.keccak256(ethers.toUtf8Bytes(deposit.txid));
   const amountWei = BigInt(deposit.amount) * BigInt(1e6);
   const clusterId = node._activeClusterId || ethers.ZeroHash;
-  const messageHash = ethers.keccak256(
-    ethers.solidityPacked(
-      ['address', 'bytes32', 'bytes32', 'uint256'],
-      [recipient, clusterId, depositId, amountWei],
-    ),
-  );
+  const messageHash = ethers.keccak256(ethers.solidityPacked(['address', 'bytes32', 'bytes32', 'uint256'], [recipient, clusterId, depositId, amountWei]));
   const signature = await node.wallet.signMessage(ethers.getBytes(messageHash));
   console.log(`[Bridge] Generated mint signature for ${recipient}`);
-  console.log(`  Deposit ID: ${depositId}`);
-  console.log(`  Amount: ${ethers.formatEther(amountWei)} zXMR`);
-  if (!node._pendingMintSignatures) {
-    node._pendingMintSignatures = new Map();
-  }
+  if (!node._pendingMintSignatures) node._pendingMintSignatures = new Map();
   const sigData = {
     clusterId,
     depositId,
@@ -911,20 +629,15 @@ async function generateAndShareMintSignature(node, deposit, recipient) {
   };
   node._pendingMintSignatures.set(deposit.txid, sigData);
   try {
-    await node.p2p.broadcastRoundData(
-      node._activeClusterId,
-      node._sessionId || 'bridge',
-      MINT_SIGNATURE_ROUND,
-      JSON.stringify({
-        type: 'mint-signature',
-        xmrTxid: deposit.txid,
-        depositId,
-        amount: amountWei.toString(),
-        recipient,
-        signer: node.wallet.address,
-        signature,
-      }),
-    );
+    await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', MINT_SIGNATURE_ROUND, JSON.stringify({
+      type: 'mint-signature',
+      xmrTxid: deposit.txid,
+      depositId,
+      amount: amountWei.toString(),
+      recipient,
+      signer: node.wallet.address,
+      signature,
+    }));
   } catch (e) {
     console.log('[Bridge] Failed to broadcast signature:', e.message || String(e));
   }
@@ -932,27 +645,12 @@ async function generateAndShareMintSignature(node, deposit, recipient) {
 }
 
 async function collectMintSignatures(node, xmrTxid) {
-  if (!node._pendingMintSignatures || !node._pendingMintSignatures.has(xmrTxid)) {
-    return;
-  }
+  if (!node._pendingMintSignatures || !node._pendingMintSignatures.has(xmrTxid)) return;
   const sigData = node._pendingMintSignatures.get(xmrTxid);
   try {
-    const complete = await node.p2p.waitForRoundCompletion(
-      node._activeClusterId,
-      node._sessionId || 'bridge',
-      MINT_SIGNATURE_COLLECT_ROUND,
-      node._clusterMembers,
-      MINT_SIGNATURE_TIMEOUT_MS,
-    );
-    if (!complete) {
-      console.log('[Bridge] Timeout waiting for mint signatures');
-    }
-    const payloads = await node.p2p.getPeerPayloads(
-      node._activeClusterId,
-      node._sessionId || 'bridge',
-      MINT_SIGNATURE_ROUND,
-      node._clusterMembers,
-    );
+    const complete = await node.p2p.waitForRoundCompletion(node._activeClusterId, node._sessionId || 'bridge', MINT_SIGNATURE_COLLECT_ROUND, node._clusterMembers, MINT_SIGNATURE_TIMEOUT_MS);
+    if (!complete) console.log('[Bridge] Timeout waiting for mint signatures');
+    const payloads = await node.p2p.getPeerPayloads(node._activeClusterId, node._sessionId || 'bridge', MINT_SIGNATURE_ROUND, node._clusterMembers);
     const existingSigners = new Set(sigData.signatures.map((s) => s.signer.toLowerCase()));
     for (const payload of payloads) {
       try {
@@ -970,9 +668,7 @@ async function collectMintSignatures(node, xmrTxid) {
 }
 
 export function getMintSignature(node, xmrTxid) {
-  if (!node._pendingMintSignatures) {
-    return null;
-  }
+  if (!node._pendingMintSignatures) return null;
   const data = node._pendingMintSignatures.get(xmrTxid);
   if (!data) return null;
   return {
@@ -988,9 +684,7 @@ export function getMintSignature(node, xmrTxid) {
 }
 
 export function getAllPendingSignatures(node) {
-  if (!node._pendingMintSignatures) {
-    return [];
-  }
+  if (!node._pendingMintSignatures) return [];
   const result = [];
   for (const [txid, data] of node._pendingMintSignatures) {
     result.push({
@@ -1007,33 +701,34 @@ export function getAllPendingSignatures(node) {
   return result;
 }
 
-async function selectClusterForDeposit(node, ethAddress) {
+async function selectClusterForDeposit(node, ethAddress, paymentId) {
   if (!node.registry || !node.staking) {
     return { clusterId: node._activeClusterId || ethers.ZeroHash, requestKey: null };
   }
   let clusters;
-  try {
-    clusters = await node.registry.getActiveClusters();
-  } catch (e) {
-    return { clusterId: node._activeClusterId || ethers.ZeroHash, requestKey: null };
+  try { clusters = await node.registry.getActiveClusters(); }
+  catch (e) {
+    throw new Error('Failed to fetch active clusters');
   }
   if (!clusters || clusters.length === 0) {
     return { clusterId: node._activeClusterId || ethers.ZeroHash, requestKey: null };
   }
-  const salt = crypto.randomBytes(8);
-  const requestKeyHex = ethers.keccak256(
-    ethers.solidityPacked(['address', 'bytes8'], [ethAddress, ethers.hexlify(salt)]),
-  );
+  const requestKeyHex = ethers.keccak256(ethers.solidityPacked(['address', 'string'], [ethAddress, paymentId]));
   const requestKey = ethers.toBigInt(requestKeyHex);
   const stakes = [];
   let total = 0n;
   let nonZero = false;
+  let failedQueries = 0;
   for (const id of clusters) {
     let stake = 0n;
     try {
       const v = await node.registry.getClusterStake(id);
       stake = BigInt(v.toString());
     } catch (e) {
+      failedQueries++;
+      if (failedQueries >= MAX_STAKE_QUERY_FAILURES) {
+        throw new Error('Too many stake query failures');
+      }
       stake = 0n;
     }
     stakes.push(stake);
@@ -1051,9 +746,7 @@ async function selectClusterForDeposit(node, ethAddress) {
         break;
       }
     }
-    if (!selected) {
-      selected = clusters[clusters.length - 1];
-    }
+    if (!selected) selected = clusters[clusters.length - 1];
   } else {
     const idx = Number(requestKey % BigInt(clusters.length));
     selected = clusters[idx];
@@ -1062,110 +755,65 @@ async function selectClusterForDeposit(node, ethAddress) {
 }
 
 export async function registerDepositRequest(node, ethAddress, paymentId) {
-  if (!node._pendingDepositRequests) {
-    node._pendingDepositRequests = new Map();
-  }
-  const sel = await selectClusterForDeposit(node, ethAddress);
+  if (!node._pendingDepositRequests) node._pendingDepositRequests = new Map();
+  let id = paymentId;
+  if (!id) id = crypto.randomBytes(8).toString('hex');
+  const sel = await selectClusterForDeposit(node, ethAddress, id);
   let clusterId = sel.clusterId || node._activeClusterId || ethers.ZeroHash;
   let requestKey = sel.requestKey || null;
   let finalAddress = null;
   if (node.registry && clusterId && clusterId !== ethers.ZeroHash) {
     try {
       const info = await node.registry.clusters(clusterId);
-      if (info && info[0] && info[2]) {
-        finalAddress = info[0];
-      }
+      if (info && info[0] && info[2]) finalAddress = info[0];
     } catch (e) {}
   }
-  if (!finalAddress && node._clusterFinalAddress) {
-    finalAddress = node._clusterFinalAddress;
-  }
-  if (!finalAddress) {
-    throw new Error('No active clusters');
-  }
-  let id = paymentId;
-  if (!id) {
-    id = crypto.randomBytes(8).toString('hex');
-  }
+  if (!finalAddress && node._clusterFinalAddress) finalAddress = node._clusterFinalAddress;
+  if (!finalAddress) throw new Error('No active clusters');
   node._pendingDepositRequests.set(id, { ethAddress, clusterId, requestKey });
-  if (node.p2p && node.staking) {
+  if (node.p2p && node.staking && node.wallet) {
     try {
+      const signature = await signDepositRequestPayload(node.wallet, id, ethAddress, clusterId, requestKey);
       const payload = JSON.stringify({
         type: 'deposit-request',
         paymentId: id,
         ethAddress,
         clusterId,
         requestKey,
+        signer: node.wallet.address,
+        signature,
       });
-      await node.p2p.broadcastRoundData(
-        GLOBAL_BRIDGE_CLUSTER_ID,
-        GLOBAL_BRIDGE_SESSION,
-        DEPOSIT_REQUEST_ROUND,
-        payload,
-      );
+      await node.p2p.broadcastRoundData(GLOBAL_BRIDGE_CLUSTER_ID, GLOBAL_BRIDGE_SESSION, DEPOSIT_REQUEST_ROUND, payload);
     } catch (e) {}
   }
   saveBridgeState(node);
   let integratedAddress = null;
   if (node.monero) {
-    try {
-      integratedAddress = await node.monero.makeIntegratedAddress(id, finalAddress);
-    } catch (e) {}
+    try { integratedAddress = await node.monero.makeIntegratedAddress(id, finalAddress); }
+    catch (e) {}
   }
-  return {
-    paymentId: id,
-    multisigAddress: finalAddress,
-    integratedAddress: integratedAddress || finalAddress,
-    clusterId,
-    ethAddress,
-  };
+  return { paymentId: id, multisigAddress: finalAddress, integratedAddress: integratedAddress || finalAddress, clusterId, ethAddress };
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 export async function startWithdrawalMonitor(node) {
-  if (node._withdrawalMonitorRunning) {
-    return;
-  }
-
+  if (node._withdrawalMonitorRunning) return;
   const bridgeEnabled = isBridgeEnabled();
   if (!bridgeEnabled) {
     console.log('[Withdrawal] Withdrawal monitoring disabled by configuration (BRIDGE_ENABLED=0)');
     return;
   }
-
   if (!node._clusterFinalized || !node._clusterFinalAddress) {
     console.log('[Withdrawal] Cannot start withdrawal monitor: cluster not finalized');
     return;
   }
-
   if (!node.bridge) {
     console.log('[Withdrawal] Cannot start withdrawal monitor: bridge contract not configured');
     return;
   }
-
   node._withdrawalMonitorRunning = true;
   node._processedWithdrawals = node._processedWithdrawals || new Set();
   node._pendingWithdrawals = node._pendingWithdrawals || new Map();
-
   console.log('[Withdrawal] Starting withdrawal event monitor...');
-
   try {
     const activeClusterId = node._activeClusterId;
     if (!activeClusterId) {
@@ -1173,25 +821,16 @@ export async function startWithdrawalMonitor(node) {
       node._withdrawalMonitorRunning = false;
       return;
     }
-
     const filter = node.bridge.filters.TokensBurned(null, activeClusterId);
-
     const currentBlock = await node.provider.getBlockNumber();
     const fromBlock = Math.max(0, currentBlock - 300);
-
     try {
       const pastEvents = await node.bridge.queryFilter(filter, fromBlock, currentBlock);
-      for (const event of pastEvents) {
-        await handleBurnEvent(node, event);
-      }
+      for (const event of pastEvents) await handleBurnEvent(node, event);
     } catch (e) {
       console.log('[Withdrawal] Failed to query past burn events:', e.message || String(e));
     }
-
-    node.bridge.on(filter, async (user, xmrAddress, amount, fee, event) => {
-      await handleBurnEvent(node, event);
-    });
-
+    node.bridge.on(filter, async (user, xmrAddress, amount, fee, event) => { await handleBurnEvent(node, event); });
     console.log('[Withdrawal] Now listening for TokensBurned events');
     setupWithdrawalClaimListener(node);
   } catch (e) {
@@ -1207,12 +846,7 @@ function setupWithdrawalClaimListener(node) {
   const pollClaims = async () => {
     if (!node._withdrawalMonitorRunning) return;
     try {
-      const payloads = await node.p2p.getPeerPayloads(
-        node._activeClusterId,
-        node._sessionId || 'bridge',
-        9899,
-        node._clusterMembers,
-      );
+      const payloads = await node.p2p.getPeerPayloads(node._activeClusterId, node._sessionId || 'bridge', 9899, node._clusterMembers);
       for (const payload of payloads) {
         try {
           const data = JSON.parse(payload);
@@ -1225,9 +859,7 @@ function setupWithdrawalClaimListener(node) {
         } catch (_ignored) {}
       }
     } catch (_ignored) {}
-    if (node._withdrawalMonitorRunning) {
-      setTimeout(pollClaims, 5000);
-    }
+    if (node._withdrawalMonitorRunning) setTimeout(pollClaims, 5000);
   };
   pollClaims();
 }
@@ -1235,9 +867,8 @@ function setupWithdrawalClaimListener(node) {
 export function stopWithdrawalMonitor(node) {
   node._withdrawalMonitorRunning = false;
   if (node.bridge) {
-    try {
-      node.bridge.removeAllListeners('TokensBurned');
-    } catch (_ignored) {}
+    try { node.bridge.removeAllListeners('TokensBurned'); }
+    catch (_ignored) {}
   }
   console.log('[Withdrawal] Withdrawal monitor stopped');
 }
@@ -1245,79 +876,46 @@ export function stopWithdrawalMonitor(node) {
 async function handleBurnEvent(node, event) {
   try {
     const txHash = event.transactionHash;
-
     node._processedWithdrawals = node._processedWithdrawals || new Set();
-    if (node._processedWithdrawals.has(txHash)) {
-      return;
-    }
-
+    if (node._processedWithdrawals.has(txHash)) return;
     const activeClusterId = node._activeClusterId;
     if (!activeClusterId) {
       console.log('[Withdrawal] No activeClusterId set, skipping burn event');
       return;
     }
-
     const user = event.args[0] ?? event.args.user;
     const clusterIdFromEvent = event.args[1] ?? event.args.clusterId;
     const xmrAddress = event.args[2] ?? event.args.xmrAddress;
     const amount = event.args[3] ?? event.args.burnAmount ?? event.args.amount;
     const fee = event.args[4] ?? event.args.fee;
-
     console.log('[Withdrawal] TokensBurned event detected:');
     console.log(`  TX: ${txHash}`);
     console.log(`  User: ${user}`);
     console.log(`  Cluster ID: ${clusterIdFromEvent}`);
     console.log(`  XMR Address: ${xmrAddress}`);
     console.log(`  Amount: ${ethers.formatEther(amount)} zXMR`);
-    console.log(`  Fee: ${ethers.formatEther(fee)} zXMR`);
-
-    if (
-      typeof clusterIdFromEvent === 'string' &&
-      typeof activeClusterId === 'string' &&
-      clusterIdFromEvent.toLowerCase() !== activeClusterId.toLowerCase()
-    ) {
-      console.log(
-        `[Withdrawal] Burn event clusterId mismatch (event=${clusterIdFromEvent}, local=${activeClusterId}), skipping`,
-      );
+    if (typeof clusterIdFromEvent === 'string' && typeof activeClusterId === 'string' && clusterIdFromEvent.toLowerCase() !== activeClusterId.toLowerCase()) {
+      console.log(`[Withdrawal] Burn event clusterId mismatch (event=${clusterIdFromEvent}, local=${activeClusterId}), skipping`);
       return;
     }
-
     if (!isValidMoneroAddress(xmrAddress)) {
       console.log(`[Withdrawal] Invalid Monero address, skipping: ${xmrAddress}`);
       node._processedWithdrawals.add(txHash);
       return;
     }
-
     const xmrAtomicAmount = BigInt(amount) / BigInt(1e6);
-
-    const withdrawal = {
-      txHash,
-      user,
-      xmrAddress,
-      zxmrAmount: amount.toString(),
-      xmrAmount: xmrAtomicAmount.toString(),
-      blockNumber: event.blockNumber,
-      timestamp: Date.now(),
-    };
-
+    const withdrawal = { txHash, user, xmrAddress, zxmrAmount: amount.toString(), xmrAmount: xmrAtomicAmount.toString(), blockNumber: event.blockNumber, timestamp: Date.now() };
     try {
       const consensusResult = await runWithdrawalConsensus(node, withdrawal);
-
       if (consensusResult.success) {
         console.log(`[Withdrawal] Consensus reached for withdrawal ${txHash.slice(0, 18)}...`);
         await executeWithdrawalWithCascade(node, withdrawal);
       } else {
-        console.log(
-          `[Withdrawal] Consensus failed for ${txHash.slice(0, 18)}: ${consensusResult.reason}`,
-        );
+        console.log(`[Withdrawal] Consensus failed for ${txHash.slice(0, 18)}: ${consensusResult.reason}`);
       }
     } catch (e) {
-      console.log(
-        `[Withdrawal] Consensus error for ${txHash.slice(0, 18)}:`,
-        e.message || String(e),
-      );
+      console.log(`[Withdrawal] Consensus error for ${txHash.slice(0, 18)}:`, e.message || String(e));
     }
-
     node._processedWithdrawals.add(txHash);
   } catch (e) {
     console.log('[Withdrawal] Error handling burn event:', e.message || String(e));
@@ -1328,38 +926,15 @@ async function runWithdrawalConsensus(node, withdrawal) {
   if (!node.p2p || !node._clusterMembers || node._clusterMembers.length === 0) {
     return { success: false, reason: 'no cluster members' };
   }
-
   const clusterId = node._activeClusterId;
   const sessionId = node._sessionId || 'bridge';
-
-  const withdrawalHash = ethers.keccak256(
-    ethers.AbiCoder.defaultAbiCoder().encode(
-      ['bytes32', 'address', 'string', 'uint256'],
-      [withdrawal.txHash, withdrawal.user, withdrawal.xmrAddress, withdrawal.xmrAmount],
-    ),
-  );
-
-  console.log(
-    `[Withdrawal] Running PBFT consensus for withdrawal ${withdrawal.txHash.slice(0, 18)}...`,
-  );
-  console.log(`  Hash: ${withdrawalHash.slice(0, 18)}...`);
-
+  const withdrawalHash = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['bytes32', 'address', 'string', 'uint256'], [withdrawal.txHash, withdrawal.user, withdrawal.xmrAddress, withdrawal.xmrAmount]));
+  console.log(`[Withdrawal] Running PBFT consensus for withdrawal ${withdrawal.txHash.slice(0, 18)}...`);
   const topic = `withdrawal-${withdrawal.txHash.slice(0, 18)}`;
   const timeoutMs = Number(process.env.WITHDRAWAL_CONSENSUS_TIMEOUT_MS || 180000);
-
   try {
-    const result = await node.p2p.runConsensus(
-      clusterId,
-      sessionId,
-      topic,
-      withdrawalHash,
-      node._clusterMembers,
-      timeoutMs,
-    );
-
-    if (result && result.success) {
-      return { success: true };
-    }
+    const result = await node.p2p.runConsensus(clusterId, sessionId, topic, withdrawalHash, node._clusterMembers, timeoutMs);
+    if (result && result.success) return { success: true };
     return { success: false, reason: result ? result.reason : 'unknown' };
   } catch (e) {
     return { success: false, reason: e.message || String(e) };
@@ -1377,7 +952,6 @@ function getWithdrawalTurnIndex(node) {
 async function executeWithdrawalWithCascade(node, withdrawal) {
   const myIndex = getWithdrawalTurnIndex(node);
   if (myIndex < 0) return;
-  const claimKey = `withdrawal-claim-${withdrawal.txHash}`;
   const existingClaim = node._withdrawalClaims?.get(withdrawal.txHash);
   if (existingClaim && Date.now() - existingClaim.timestamp < WITHDRAWAL_CASCADE_INTERVAL_MS * 2) {
     const claimIndex = getWithdrawalTurnIndex({ ...node, wallet: { address: existingClaim.claimer } });
@@ -1402,12 +976,7 @@ async function executeWithdrawalWithCascade(node, withdrawal) {
   node._withdrawalClaims = node._withdrawalClaims || new Map();
   node._withdrawalClaims.set(withdrawal.txHash, { claimer: node.wallet.address, timestamp: Date.now() });
   try {
-    await node.p2p.broadcastRoundData(
-      node._activeClusterId,
-      node._sessionId || 'bridge',
-      9899,
-      JSON.stringify({ type: 'withdrawal-claim', txHash: withdrawal.txHash, claimer: node.wallet.address }),
-    );
+    await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', 9899, JSON.stringify({ type: 'withdrawal-claim', txHash: withdrawal.txHash, claimer: node.wallet.address }));
   } catch (_ignored) {}
   await executeWithdrawal(node, withdrawal);
 }
@@ -1416,22 +985,10 @@ async function executeWithdrawal(node, withdrawal) {
   console.log(`[Withdrawal] Executing withdrawal to ${withdrawal.xmrAddress}`);
   console.log(`  Amount: ${Number(withdrawal.xmrAmount) / 1e12} XMR`);
   node._pendingWithdrawals = node._pendingWithdrawals || new Map();
-  node._pendingWithdrawals.set(withdrawal.txHash, {
-    ...withdrawal,
-    status: 'pending',
-    startedAt: Date.now(),
-  });
-
+  node._pendingWithdrawals.set(withdrawal.txHash, { ...withdrawal, status: 'pending', startedAt: Date.now() });
   try {
     console.log('[Withdrawal] Creating multisig transfer transaction...');
-
-    const destinations = [
-      {
-        address: withdrawal.xmrAddress,
-        amount: BigInt(withdrawal.xmrAmount),
-      },
-    ];
-
+    const destinations = [{ address: withdrawal.xmrAddress, amount: BigInt(withdrawal.xmrAmount) }];
     let txData;
     try {
       txData = await node.monero.transfer(destinations);
@@ -1442,79 +999,41 @@ async function executeWithdrawal(node, withdrawal) {
       node._pendingWithdrawals.get(withdrawal.txHash).error = e.message;
       return;
     }
-
     if (!txData || !txData.txDataHex) {
       console.log('[Withdrawal] No transaction data returned from transfer');
       return;
     }
-
     console.log('[Withdrawal] Broadcasting unsigned tx for multisig signing...');
-
-    await node.p2p.broadcastRoundData(
-      node._activeClusterId,
-      node._sessionId || 'bridge',
-      9900,
-      JSON.stringify({
-        type: 'withdrawal-sign-request',
-        withdrawalTxHash: withdrawal.txHash,
-        xmrAddress: withdrawal.xmrAddress,
-        amount: withdrawal.xmrAmount,
-        txDataHex: txData.txDataHex,
-      }),
-    );
-
+    await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', 9900, JSON.stringify({
+      type: 'withdrawal-sign-request',
+      withdrawalTxHash: withdrawal.txHash,
+      xmrAddress: withdrawal.xmrAddress,
+      amount: withdrawal.xmrAmount,
+      txDataHex: txData.txDataHex,
+    }));
     console.log('[Withdrawal] Waiting for multisig signatures...');
-
     const signatureTimeoutMs = Number(process.env.WITHDRAWAL_SIGN_TIMEOUT_MS || 300000);
-
     const signatureRound = 9901;
-    const complete = await node.p2p.waitForRoundCompletion(
-      node._activeClusterId,
-      node._sessionId || 'bridge',
-      signatureRound,
-      node._clusterMembers,
-      signatureTimeoutMs,
-    );
-
+    const complete = await node.p2p.waitForRoundCompletion(node._activeClusterId, node._sessionId || 'bridge', signatureRound, node._clusterMembers, signatureTimeoutMs);
     if (!complete) {
       console.log('[Withdrawal] Failed to collect enough signatures');
       node._pendingWithdrawals.get(withdrawal.txHash).status = 'signing_failed';
       return;
     }
-
     console.log('[Withdrawal] Combining signatures and submitting transaction...');
-
-    const signatures = await node.p2p.getPeerPayloads(
-      node._activeClusterId,
-      node._sessionId || 'bridge',
-      signatureRound,
-      node._clusterMembers,
-    );
+    const signatures = await node.p2p.getPeerPayloads(node._activeClusterId, node._sessionId || 'bridge', signatureRound, node._clusterMembers);
     console.log(`[Withdrawal] Collected ${signatures.length} multisig signatures`);
-
     let signedTx;
-    try {
-      signedTx = await node.monero.signMultisig(txData.txDataHex);
-    } catch (e) {
+    try { signedTx = await node.monero.signMultisig(txData.txDataHex); }
+    catch (e) {
       console.log('[Withdrawal] Failed to sign multisig tx:', e.message || String(e));
       node._pendingWithdrawals.get(withdrawal.txHash).status = 'sign_failed';
       return;
     }
-
     try {
-      const submitResult = await node.monero.call(
-        'submit_multisig',
-        {
-          tx_data_hex: signedTx.txDataHex || txData.txDataHex,
-        },
-        180000,
-      );
-
+      const submitResult = await node.monero.call('submit_multisig', { tx_data_hex: signedTx.txDataHex || txData.txDataHex }, 180000);
       console.log('[Withdrawal] Transaction submitted successfully');
-      console.log(
-        `  TX Hash(es): ${submitResult.tx_hash_list ? submitResult.tx_hash_list.join(', ') : 'unknown'}`,
-      );
-
+      console.log(`  TX Hash(es): ${submitResult.tx_hash_list ? submitResult.tx_hash_list.join(', ') : 'unknown'}`);
       node._pendingWithdrawals.get(withdrawal.txHash).status = 'completed';
       node._pendingWithdrawals.get(withdrawal.txHash).xmrTxHashes = submitResult.tx_hash_list;
     } catch (e) {
@@ -1536,24 +1055,15 @@ export async function handleWithdrawalSignRequest(node, data) {
     console.log('[Withdrawal] Invalid sign request data');
     return;
   }
-
   console.log(`[Withdrawal] Received sign request for ${data.withdrawalTxHash.slice(0, 18)}...`);
-
   try {
     const signedTx = await node.monero.signMultisig(data.txDataHex);
-
     const signatureRound = 9901;
-    await node.p2p.broadcastRoundData(
-      node._activeClusterId,
-      node._sessionId || 'bridge',
-      signatureRound,
-      JSON.stringify({
-        type: 'withdrawal-signature',
-        withdrawalTxHash: data.withdrawalTxHash,
-        signedTxHex: signedTx.txDataHex,
-      }),
-    );
-
+    await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', signatureRound, JSON.stringify({
+      type: 'withdrawal-signature',
+      withdrawalTxHash: data.withdrawalTxHash,
+      signedTxHex: signedTx.txDataHex,
+    }));
     console.log(`[Withdrawal] Broadcasted signature for ${data.withdrawalTxHash.slice(0, 18)}`);
   } catch (e) {
     console.log('[Withdrawal] Failed to sign withdrawal tx:', e.message || String(e));
@@ -1561,20 +1071,15 @@ export async function handleWithdrawalSignRequest(node, data) {
 }
 
 export function getWithdrawalStatus(node, ethTxHash) {
-  if (!node._pendingWithdrawals) {
-    return null;
-  }
+  if (!node._pendingWithdrawals) return null;
   return node._pendingWithdrawals.get(ethTxHash) || null;
 }
 
 export function getAllPendingWithdrawals(node) {
-  if (!node._pendingWithdrawals) {
-    return [];
-  }
+  if (!node._pendingWithdrawals) return [];
   const result = [];
   for (const [txHash, data] of node._pendingWithdrawals) {
     result.push({ ethTxHash: txHash, ...data });
   }
   return result;
 }
-
