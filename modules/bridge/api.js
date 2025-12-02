@@ -201,12 +201,12 @@ async function handleAPIRequest(node, req, res, pathname, params) {
         return jsonResponse(res, 400, { error: 'Invalid ethAddress' });
       }
 
-      if (!node._clusterFinalAddress) {
-        return jsonResponse(res, 503, { error: 'Cluster not ready' });
+      try {
+        const result = await registerDepositRequest(node, ethAddress);
+        return jsonResponse(res, 200, result);
+      } catch (e) {
+        return jsonResponse(res, 503, { error: e.message || 'Deposit routing unavailable' });
       }
-
-      const result = await registerDepositRequest(node, ethAddress);
-      return jsonResponse(res, 200, result);
     }
 
     if (pathname.startsWith('/bridge/deposit/status/') && req.method === 'GET') {
@@ -495,7 +495,15 @@ function loadBridgeState(node) {
     }
 
     if (data.pendingDepositRequests && typeof data.pendingDepositRequests === "object") {
-      node._pendingDepositRequests = new Map(Object.entries(data.pendingDepositRequests));
+      const map = new Map();
+      for (const [k, v] of Object.entries(data.pendingDepositRequests)) {
+        if (v && typeof v === 'object' && typeof v.ethAddress === 'string') {
+          map.set(k, { ethAddress: v.ethAddress, clusterId: v.clusterId || null, requestKey: v.requestKey || null });
+        } else if (typeof v === 'string') {
+          map.set(k, { ethAddress: v, clusterId: null, requestKey: null });
+        }
+      }
+      node._pendingDepositRequests = map;
       console.log(`[Bridge] Loaded ${node._pendingDepositRequests.size} pending deposit requests from disk`);
     }
 
@@ -661,11 +669,20 @@ export function stopDepositMonitor(node) {
 }
 
 async function syncDepositRequests(node) {
-  if (!node.p2p || !node._activeClusterId || !node._clusterMembers || node._clusterMembers.length === 0) {
+  if (!node.p2p || !node.staking) {
     return;
   }
+  let members = [];
   try {
-    const payloads = await node.p2p.getPeerPayloads(node._activeClusterId, node._sessionId || 'bridge', DEPOSIT_REQUEST_ROUND, node._clusterMembers);
+    members = await node.staking.getActiveNodes();
+  } catch (e) {}
+  try {
+    const payloads = await node.p2p.getPeerPayloads(
+      GLOBAL_BRIDGE_CLUSTER_ID,
+      GLOBAL_BRIDGE_SESSION,
+      DEPOSIT_REQUEST_ROUND,
+      members || [],
+    );
     if (!payloads || payloads.length === 0) {
       return;
     }
@@ -679,8 +696,17 @@ async function syncDepositRequests(node) {
         if (!data || data.type !== 'deposit-request') continue;
         if (!data.paymentId || !data.ethAddress) continue;
         if (!ethers.isAddress(data.ethAddress)) continue;
+        if (node._activeClusterId && data.clusterId && typeof data.clusterId === 'string') {
+          if (data.clusterId.toLowerCase() !== node._activeClusterId.toLowerCase()) {
+            continue;
+          }
+        }
         if (!node._pendingDepositRequests.has(data.paymentId)) {
-          node._pendingDepositRequests.set(data.paymentId, data.ethAddress);
+          node._pendingDepositRequests.set(data.paymentId, {
+            ethAddress: data.ethAddress,
+            clusterId: data.clusterId || null,
+            requestKey: data.requestKey || null,
+          });
           updated = true;
         }
       } catch (e) {}
@@ -783,7 +809,13 @@ function parseRecipientFromPaymentId(node, paymentId) {
   }
 
   if (node._pendingDepositRequests && node._pendingDepositRequests.has(paymentId)) {
-    return node._pendingDepositRequests.get(paymentId);
+    const entry = node._pendingDepositRequests.get(paymentId);
+    if (entry && typeof entry === 'object' && typeof entry.ethAddress === 'string') {
+      return entry.ethAddress;
+    }
+    if (typeof entry === 'string') {
+      return entry;
+    }
   }
 
   return null;
@@ -837,9 +869,11 @@ function isClusterCoordinator(node) {
   const sorted = [...node._clusterMembers].map((a) => a.toLowerCase()).sort();
 
   return sorted[0] === node.wallet.address.toLowerCase();
-const DEPOSIT_REQUEST_ROUND = 9700;
 }
 
+const DEPOSIT_REQUEST_ROUND = 9700;
+const GLOBAL_BRIDGE_CLUSTER_ID = 'GLOBAL_BRIDGE';
+const GLOBAL_BRIDGE_SESSION = 'bridge-global';
 const MINT_SIGNATURE_ROUND = 9800;
 const MINT_SIGNATURE_COLLECT_ROUND = 9801;
 const REQUIRED_MINT_SIGNATURES = 7;
@@ -973,32 +1007,116 @@ export function getAllPendingSignatures(node) {
   return result;
 }
 
+async function selectClusterForDeposit(node, ethAddress) {
+  if (!node.registry || !node.staking) {
+    return { clusterId: node._activeClusterId || ethers.ZeroHash, requestKey: null };
+  }
+  let clusters;
+  try {
+    clusters = await node.registry.getActiveClusters();
+  } catch (e) {
+    return { clusterId: node._activeClusterId || ethers.ZeroHash, requestKey: null };
+  }
+  if (!clusters || clusters.length === 0) {
+    return { clusterId: node._activeClusterId || ethers.ZeroHash, requestKey: null };
+  }
+  const salt = crypto.randomBytes(8);
+  const requestKeyHex = ethers.keccak256(
+    ethers.solidityPacked(['address', 'bytes8'], [ethAddress, ethers.hexlify(salt)]),
+  );
+  const requestKey = ethers.toBigInt(requestKeyHex);
+  const stakes = [];
+  let total = 0n;
+  let nonZero = false;
+  for (const id of clusters) {
+    let stake = 0n;
+    try {
+      const v = await node.registry.getClusterStake(id);
+      stake = BigInt(v.toString());
+    } catch (e) {
+      stake = 0n;
+    }
+    stakes.push(stake);
+    total += stake;
+    if (stake > 0n) nonZero = true;
+  }
+  let selected = null;
+  if (nonZero && total > 0n) {
+    const r = requestKey % total;
+    let acc = 0n;
+    for (let i = 0; i < clusters.length; i += 1) {
+      acc += stakes[i];
+      if (r < acc) {
+        selected = clusters[i];
+        break;
+      }
+    }
+    if (!selected) {
+      selected = clusters[clusters.length - 1];
+    }
+  } else {
+    const idx = Number(requestKey % BigInt(clusters.length));
+    selected = clusters[idx];
+  }
+  return { clusterId: selected, requestKey: requestKeyHex };
+}
+
 export async function registerDepositRequest(node, ethAddress, paymentId) {
   if (!node._pendingDepositRequests) {
     node._pendingDepositRequests = new Map();
   }
+  const sel = await selectClusterForDeposit(node, ethAddress);
+  let clusterId = sel.clusterId || node._activeClusterId || ethers.ZeroHash;
+  let requestKey = sel.requestKey || null;
+  let finalAddress = null;
+  if (node.registry && clusterId && clusterId !== ethers.ZeroHash) {
+    try {
+      const info = await node.registry.clusters(clusterId);
+      if (info && info[0] && info[2]) {
+        finalAddress = info[0];
+      }
+    } catch (e) {}
+  }
+  if (!finalAddress && node._clusterFinalAddress) {
+    finalAddress = node._clusterFinalAddress;
+  }
+  if (!finalAddress) {
+    throw new Error('No active clusters');
+  }
   let id = paymentId;
   if (!id) {
-    id = crypto.randomBytes(8).toString("hex");
+    id = crypto.randomBytes(8).toString('hex');
   }
-  node._pendingDepositRequests.set(id, ethAddress);
-  if (node._activeClusterId && node._clusterMembers && node._clusterMembers.length > 0 && node.p2p) {
+  node._pendingDepositRequests.set(id, { ethAddress, clusterId, requestKey });
+  if (node.p2p && node.staking) {
     try {
-      const payload = JSON.stringify({ type: 'deposit-request', paymentId: id, ethAddress });
-      await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', DEPOSIT_REQUEST_ROUND, payload);
+      const payload = JSON.stringify({
+        type: 'deposit-request',
+        paymentId: id,
+        ethAddress,
+        clusterId,
+        requestKey,
+      });
+      await node.p2p.broadcastRoundData(
+        GLOBAL_BRIDGE_CLUSTER_ID,
+        GLOBAL_BRIDGE_SESSION,
+        DEPOSIT_REQUEST_ROUND,
+        payload,
+      );
     } catch (e) {}
   }
   saveBridgeState(node);
   let integratedAddress = null;
-  if (node.monero && node._clusterFinalAddress) {
+  if (node.monero) {
     try {
-      integratedAddress = await node.monero.makeIntegratedAddress(id, node._clusterFinalAddress);
+      integratedAddress = await node.monero.makeIntegratedAddress(id, finalAddress);
     } catch (e) {}
   }
   return {
     paymentId: id,
-    multisigAddress: node._clusterFinalAddress,
-    integratedAddress: integratedAddress || node._clusterFinalAddress,
+    multisigAddress: finalAddress,
+    integratedAddress: integratedAddress || finalAddress,
+    clusterId,
     ethAddress,
   };
 }

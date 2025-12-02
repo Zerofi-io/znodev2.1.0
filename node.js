@@ -177,6 +177,9 @@ class ZNode {
       'function canRejoinCluster(address node) external view returns (bool canRejoin, bytes32 clusterId)',
       'function nodes(address) external view returns (bytes32 codeHash, bool registered, bool inCluster)',
       'function nodeToCluster(address) external view returns (bytes32)',
+      'function getActiveClusters() external view returns (bytes32[] memory)',
+      'function getClusterStake(bytes32 clusterId) external view returns (uint256)',
+      'function selectClusterForRequest(bytes32 requestKey) external view returns (bytes32)',
     ];
 
     const stakingABI = [
@@ -222,11 +225,11 @@ class ZNode {
 
     const KNOWN_DEFAULTS = {
       11155111: {
-        REGISTRY_ADDR: '0x7F34b3E8bF080640821Ca1dF585070A0e922314d',
-        STAKING_ADDR: '0x4013A720D075e2173d2299bA73F4EeFc420Eae6a',
-        ZFI_ADDR: '0x68b9eB669d0a5B648Acd88d0B98Ee8a0a99c754f',
-        COORDINATOR_ADDR: '0x72f30a5D06E0633986ae9B3978E6CA37aC971a0C',
-        BRIDGE_ADDR: '0x46149f224c9DB40D744725117e452A84D326eBe5',
+        REGISTRY_ADDR: '0x45Bba63aF96cBe1eea5d8AeEcB1C0C398C76a6be',
+        STAKING_ADDR: '0x797DD08cB58e924E74c762Bc31cf1ea3f6eAe31E',
+        ZFI_ADDR: '0x60b8C9a0470bAC6195F475e41f985FB808CF5B41',
+        COORDINATOR_ADDR: '0x8A0a261BD02CB05D5F9BBAbc887C62391C35F232',
+        BRIDGE_ADDR: '0xE2d581B835855cB986C0A266Ef9e93aA06382EE1',
         CONFIG_ADDR: '0xfDE794d056287dFb0066C7D28A60826400265a8b',
       },
     };
