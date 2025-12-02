@@ -660,7 +660,39 @@ export function stopDepositMonitor(node) {
   console.log('[Bridge] Deposit monitor stopped');
 }
 
+async function syncDepositRequests(node) {
+  if (!node.p2p || !node._activeClusterId || !node._clusterMembers || node._clusterMembers.length === 0) {
+    return;
+  }
+  try {
+    const payloads = await node.p2p.getPeerPayloads(node._activeClusterId, node._sessionId || 'bridge', DEPOSIT_REQUEST_ROUND, node._clusterMembers);
+    if (!payloads || payloads.length === 0) {
+      return;
+    }
+    if (!node._pendingDepositRequests) {
+      node._pendingDepositRequests = new Map();
+    }
+    let updated = false;
+    for (const payload of payloads) {
+      try {
+        const data = JSON.parse(payload);
+        if (!data || data.type !== 'deposit-request') continue;
+        if (!data.paymentId || !data.ethAddress) continue;
+        if (!ethers.isAddress(data.ethAddress)) continue;
+        if (!node._pendingDepositRequests.has(data.paymentId)) {
+          node._pendingDepositRequests.set(data.paymentId, data.ethAddress);
+          updated = true;
+        }
+      } catch (e) {}
+    }
+    if (updated) {
+      saveBridgeState(node);
+    }
+  } catch (e) {}
+}
+
 async function checkForDeposits(node, minConfirmations) {
+  await syncDepositRequests(node);
   if (!node.monero) {
     return;
   }
@@ -805,6 +837,7 @@ function isClusterCoordinator(node) {
   const sorted = [...node._clusterMembers].map((a) => a.toLowerCase()).sort();
 
   return sorted[0] === node.wallet.address.toLowerCase();
+const DEPOSIT_REQUEST_ROUND = 9700;
 }
 
 const MINT_SIGNATURE_ROUND = 9800;
@@ -944,26 +977,24 @@ export async function registerDepositRequest(node, ethAddress, paymentId) {
   if (!node._pendingDepositRequests) {
     node._pendingDepositRequests = new Map();
   }
-
   let id = paymentId;
   if (!id) {
     id = crypto.randomBytes(8).toString("hex");
   }
-
   node._pendingDepositRequests.set(id, ethAddress);
-  console.log('[Bridge] Registered deposit request', id, '->', ethAddress, 'size:', node._pendingDepositRequests.size);
+  if (node._activeClusterId && node._clusterMembers && node._clusterMembers.length > 0 && node.p2p) {
+    try {
+      const payload = JSON.stringify({ type: 'deposit-request', paymentId: id, ethAddress });
+      await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', DEPOSIT_REQUEST_ROUND, payload);
+    } catch (e) {}
+  }
   saveBridgeState(node);
-
-  // Generate integrated address with the payment ID
   let integratedAddress = null;
   if (node.monero && node._clusterFinalAddress) {
     try {
       integratedAddress = await node.monero.makeIntegratedAddress(id, node._clusterFinalAddress);
-    } catch (e) {
-      console.log("[Bridge] Failed to create integrated address:", e.message);
-    }
+    } catch (e) {}
   }
-
   return {
     paymentId: id,
     multisigAddress: node._clusterFinalAddress,
