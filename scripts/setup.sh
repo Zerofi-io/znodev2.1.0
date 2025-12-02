@@ -3,6 +3,27 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
+SUDO=""
+SUDO_E=""
+if [ "$(id -u)" -ne 0 ]; then
+  if command -v sudo >/dev/null 2>&1; then
+    SUDO="sudo"
+    SUDO_E="sudo -E"
+  else
+    echo "ERROR: This script must be run as root or have sudo installed"
+    exit 1
+  fi
+fi
+if command -v apt-get >/dev/null 2>&1; then
+  MISSING_PKGS=""
+  command -v curl >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS curl"
+  command -v wget >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS wget"
+  command -v tar >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS tar"
+  if [ -n "$MISSING_PKGS" ]; then
+    $SUDO $SUDO apt-get update -y >/dev/null 2>&1 || true
+    $SUDO apt-get install -y $MISSING_PKGS >/dev/null 2>&1 || echo "Failed to install packages:$MISSING_PKGS"
+  fi
+fi
 
 echo "================================================================"
 echo "                    ZNode Setup Script                          "
@@ -14,8 +35,8 @@ echo "[1/5] Checking Node.js version..."
 
 install_nodejs() {
   echo "  Installing Node.js 20.x LTS..."
-  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - >/dev/null 2>&1
-  sudo apt-get install -y nodejs >/dev/null 2>&1
+  curl -fsSL https://deb.nodesource.com/setup_20.x | $SUDO_E bash - >/dev/null 2>&1
+  $SUDO apt-get install -y nodejs >/dev/null 2>&1
   if ! command -v node >/dev/null 2>&1; then
     echo " ERROR: Failed to install Node.js automatically."
     echo "   Please install Node.js >= 18 manually from https://nodejs.org/"
@@ -50,8 +71,8 @@ install_go() {
   echo "  Installing Go $GO_VERSION..."
   cd /tmp
   wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -O go.tar.gz
-  sudo rm -rf /usr/local/go
-  sudo tar -C /usr/local -xzf go.tar.gz
+  $SUDO rm -rf /usr/local/go
+  $SUDO tar -C /usr/local -xzf go.tar.gz
   rm go.tar.gz
   export PATH="/usr/local/go/bin:$PATH"
   cd "$SCRIPT_DIR/.."
@@ -270,7 +291,7 @@ echo ""
 if ! command -v ufw >/dev/null 2>&1; then
   if command -v apt-get >/dev/null 2>&1; then
     echo "[Firewall] ufw not found; installing via apt-get..."
-    apt-get update -y >/dev/null 2>&1 && apt-get install -y ufw >/dev/null 2>&1       || echo "[Firewall] Warning: failed to install ufw. Please install it manually and open port 9000."
+    $SUDO apt-get update -y >/dev/null 2>&1 && $SUDO apt-get install -y ufw >/dev/null 2>&1       || echo "[Firewall] Warning: failed to install ufw. Please install it manually and open port 9000."
   else
     echo "[Firewall] ufw not found and apt-get not available. Please install ufw manually and open port 9000."
   fi
