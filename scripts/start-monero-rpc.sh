@@ -5,6 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 
+if ! command -v monero-wallet-rpc >/dev/null 2>&1; then
+  echo "[start-monero-rpc] ERROR: monero-wallet-rpc binary not found on PATH"
+  echo "[start-monero-rpc] Install Monero CLI (monero-wallet-rpc) and re-run ./scripts/setup.sh"
+  exit 1
+fi
+
 if [ -f "$ROOT_DIR/.env" ]; then
   set -a
   . "$ROOT_DIR/.env"

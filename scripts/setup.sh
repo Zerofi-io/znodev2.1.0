@@ -20,7 +20,7 @@ if command -v apt-get >/dev/null 2>&1; then
   command -v wget >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS wget"
   command -v tar >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS tar"
   if [ -n "$MISSING_PKGS" ]; then
-    $SUDO $SUDO apt-get update -y >/dev/null 2>&1 || true
+    $SUDO apt-get update -y >/dev/null 2>&1 || true
     $SUDO apt-get install -y $MISSING_PKGS >/dev/null 2>&1 || echo "Failed to install packages:$MISSING_PKGS"
   fi
 fi
@@ -201,7 +201,7 @@ if [ -z "$MONERO_WALLET_CLI" ]; then
         CLI_BIN="$(find "$TMP_DIR" -maxdepth 3 -type f -name 'monero-wallet-cli' | head -n 1 || true)"
         RPC_BIN="$(find "$TMP_DIR" -maxdepth 3 -type f -name 'monero-wallet-rpc' | head -n 1 || true)"
         if [ -n "$CLI_BIN" ] && [ -f "$CLI_BIN" ]; then
-          if install -m 0755 "$CLI_BIN" /usr/local/bin/monero-wallet-cli 2>/dev/null; then
+          if $SUDO install -m 0755 "$CLI_BIN" /usr/local/bin/monero-wallet-cli 2>/dev/null; then
             MONERO_WALLET_CLI="/usr/local/bin/monero-wallet-cli"
             echo " Installed monero-wallet-cli to $MONERO_WALLET_CLI"
           else
@@ -211,7 +211,7 @@ if [ -z "$MONERO_WALLET_CLI" ]; then
           echo "Could not locate monero-wallet-cli in downloaded archive."
         fi
         if [ -n "$RPC_BIN" ] && [ -f "$RPC_BIN" ]; then
-          if install -m 0755 "$RPC_BIN" /usr/local/bin/monero-wallet-rpc 2>/dev/null; then
+          if $SUDO install -m 0755 "$RPC_BIN" /usr/local/bin/monero-wallet-rpc 2>/dev/null; then
             echo " Installed monero-wallet-rpc to /usr/local/bin/monero-wallet-rpc"
           else
             echo "Failed to install monero-wallet-rpc to /usr/local/bin (insufficient permissions?)."
@@ -233,6 +233,12 @@ fi
 
 if [ -z "$MONERO_WALLET_CLI" ]; then
   echo "monero-wallet-cli is still missing. Multisig auto-enable will log a warning until you install it."
+fi
+
+if ! command -v monero-wallet-rpc >/dev/null 2>&1; then
+  echo "ERROR: monero-wallet-rpc not found on PATH after automatic install attempt."
+  echo "       Please install Monero CLI (monero-wallet-rpc) manually or re-run scripts/setup.sh as root on a machine with internet access."
+  exit 1
 fi
 
 echo ""
