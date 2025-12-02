@@ -644,6 +644,9 @@ class ZNode {
       console.log('  ClusterId: ' + effectiveClusterId.slice(0, 18) + '...');
       console.log('  Monero address: ' + onChainAddress.slice(0, 24) + '...');
       console.log('  Members: ' + effectiveMembers.length);
+      try { this.startDepositMonitor(); } catch (e) { console.log("[Bridge] Failed to start deposit monitor:", e.message || String(e)); }
+      try { this.startBridgeAPI(); } catch (e) { console.log("[BridgeAPI] Failed to start API server:", e.message || String(e)); }
+      try { this.startWithdrawalMonitor(); } catch (e) { console.log("[Withdrawal] Failed to start withdrawal monitor:", e.message || String(e)); }
       return true;
     } catch (e) {
       console.log('[Cluster] Failed to verify cluster on-chain:', e.message || String(e));
@@ -661,6 +664,9 @@ class ZNode {
         this.p2p.setActiveCluster(state.clusterId);
       }
       console.log('[Cluster] Restored from local state (unverified)');
+      try { this.startDepositMonitor(); } catch (e) { console.log("[Bridge] Failed to start deposit monitor:", e.message || String(e)); }
+      try { this.startBridgeAPI(); } catch (e) { console.log("[BridgeAPI] Failed to start API server:", e.message || String(e)); }
+      try { this.startWithdrawalMonitor(); } catch (e) { console.log("[Withdrawal] Failed to start withdrawal monitor:", e.message || String(e)); }
       return true;
     }
   }
