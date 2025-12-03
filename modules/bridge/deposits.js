@@ -105,6 +105,9 @@ async function checkForDeposits(node, minConfirmations) {
     const txid = deposit.txid;
     if (node._processedDeposits && node._processedDeposits.has(txid)) continue;
     if (node._pendingMintSignatures && node._pendingMintSignatures.has(txid)) continue;
+    // Skip if already being processed (consensus in progress)
+    if (!node._inProgressDeposits) node._inProgressDeposits = new Set();
+    if (node._inProgressDeposits.has(txid)) continue;
     console.log(`[Bridge] New deposit detected: ${txid}`);
     console.log(`  Amount: ${deposit.amount / 1e12} XMR`);
     console.log(`  Confirmations: ${deposit.confirmations}`);
@@ -120,26 +123,52 @@ async function checkForDeposits(node, minConfirmations) {
         if (!node._processedDeposits) node._processedDeposits = new Set();
         node._processedDeposits.add(txid);
         node._unresolvedDeposits.delete(txid);
+        saveBridgeState(node);
       } else {
-        console.log(`[Bridge] Skipping deposit ${txid}: no valid recipient in payment ID`);
+        console.log(`[Bridge] Skipping deposit ${txid}: no valid recipient in payment ID (retrying for ${Math.floor((DEPOSIT_RECIPIENT_GRACE_MS - (now - first)) / 1000)}s more)`);
       }
       continue;
     }
+    // Mark as in-progress to prevent concurrent processing
+    node._inProgressDeposits.add(txid);
+    let consensusSuccess = false;
     try {
       const consensusResult = await runDepositConsensus(node, deposit, recipient);
       if (consensusResult.success) {
         console.log(`[Bridge] Consensus reached for deposit ${txid}`);
         await generateAndShareMintSignature(node, deposit, recipient);
         await collectMintSignatures(node, deposit.txid);
+        consensusSuccess = true;
       } else {
         console.log(`[Bridge] Consensus failed for deposit ${txid}: ${consensusResult.reason}`);
       }
     } catch (e) {
       console.log(`[Bridge] Consensus error for deposit ${txid}:`, e.message || String(e));
     }
-    if (!node._processedDeposits) node._processedDeposits = new Set();
-    node._processedDeposits.add(txid);
-    saveBridgeState(node);
+    node._inProgressDeposits.delete(txid);
+    if (consensusSuccess) {
+      // Success - mark as processed
+      if (!node._processedDeposits) node._processedDeposits = new Set();
+      node._processedDeposits.add(txid);
+      if (node._unresolvedDeposits) node._unresolvedDeposits.delete(txid);
+      if (node._failedConsensusDeposits) node._failedConsensusDeposits.delete(txid);
+      saveBridgeState(node);
+    } else {
+      // Track failed consensus attempts with grace period
+      const now = Date.now();
+      if (!node._failedConsensusDeposits) node._failedConsensusDeposits = new Map();
+      const firstAttempt = node._failedConsensusDeposits.get(txid) || now;
+      node._failedConsensusDeposits.set(txid, firstAttempt);
+      if (now - firstAttempt >= DEPOSIT_RECIPIENT_GRACE_MS) {
+        console.log(`[Bridge] Marking deposit ${txid} as orphan after repeated consensus failures`);
+        if (!node._processedDeposits) node._processedDeposits = new Set();
+        node._processedDeposits.add(txid);
+        node._failedConsensusDeposits.delete(txid);
+        saveBridgeState(node);
+      } else {
+        console.log(`[Bridge] Will retry consensus for deposit ${txid} (retrying for ${Math.floor((DEPOSIT_RECIPIENT_GRACE_MS - (now - firstAttempt)) / 1000)}s more)`);
+      }
+    }
   }
 }
 
