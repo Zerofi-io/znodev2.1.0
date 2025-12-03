@@ -43,7 +43,7 @@ export async function startWithdrawalMonitor(node) {
     } catch (e) {
       console.log('[Withdrawal] Failed to query past burn events:', e.message || String(e));
     }
-    node.bridge.on(filter, async (user, xmrAddress, amount, fee, event) => { await handleBurnEvent(node, event); });
+    node.bridge.on(filter, async (...args) => { const event = args[args.length - 1]; await handleBurnEvent(node, event); });
     console.log('[Withdrawal] Now listening for TokensBurned events');
     setupWithdrawalClaimListener(node);
   } catch (e) {
@@ -88,6 +88,10 @@ function setupWithdrawalClaimListener(node) {
 
 async function handleBurnEvent(node, event) {
   try {
+    if (!event || !event.transactionHash || !event.args) {
+      console.log('[Withdrawal] Burn event missing expected fields, skipping');
+      return;
+    }
     const txHash = event.transactionHash;
     node._processedWithdrawals = node._processedWithdrawals || new Set();
     if (node._processedWithdrawals.has(txHash)) return;
