@@ -6,7 +6,6 @@ const DEPOSIT_REQUEST_ROUND = 9700;
 const GLOBAL_BRIDGE_CLUSTER_ID = 'GLOBAL_BRIDGE';
 const GLOBAL_BRIDGE_SESSION = 'bridge-global';
 const MINT_SIGNATURE_ROUND = 9800;
-const MINT_SIGNATURE_COLLECT_ROUND = 9801;
 const REQUIRED_MINT_SIGNATURES = 7;
 const MINT_SIGNATURE_TIMEOUT_MS = Number(process.env.MINT_SIGNATURE_TIMEOUT_MS || 120000);
 const MAX_STAKE_QUERY_FAILURES = 3;
@@ -269,8 +268,7 @@ async function collectMintSignatures(node, xmrTxid) {
   if (!node._pendingMintSignatures || !node._pendingMintSignatures.has(xmrTxid)) return;
   const sigData = node._pendingMintSignatures.get(xmrTxid);
   try {
-    const complete = await node.p2p.waitForRoundCompletion(node._activeClusterId, node._sessionId || 'bridge', MINT_SIGNATURE_COLLECT_ROUND, node._clusterMembers, MINT_SIGNATURE_TIMEOUT_MS);
-    if (!complete) console.log('[Bridge] Timeout waiting for mint signatures');
+    const complete = await node.p2p.waitForRoundCompletion(node._activeClusterId, node._sessionId || 'bridge', MINT_SIGNATURE_ROUND, node._clusterMembers, MINT_SIGNATURE_TIMEOUT_MS);
     const payloads = await node.p2p.getPeerPayloads(node._activeClusterId, node._sessionId || 'bridge', MINT_SIGNATURE_ROUND, node._clusterMembers);
     const existingSigners = new Set(sigData.signatures.map((s) => s.signer.toLowerCase()));
     for (const payload of payloads) {
@@ -281,6 +279,9 @@ async function collectMintSignatures(node, xmrTxid) {
         sigData.signatures.push({ signer: data.signer, signature: data.signature });
         existingSigners.add(data.signer.toLowerCase());
       } catch (_ignored) {}
+    }
+    if (!complete && sigData.signatures.length < REQUIRED_MINT_SIGNATURES) {
+      console.log('[Bridge] Timeout waiting for mint signatures');
     }
     console.log(`[Bridge] Collected ${sigData.signatures.length} mint signatures for ${xmrTxid.slice(0, 16)}...`);
   } catch (e) {
