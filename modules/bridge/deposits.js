@@ -10,6 +10,7 @@ const MINT_SIGNATURE_COLLECT_ROUND = 9801;
 const REQUIRED_MINT_SIGNATURES = 7;
 const MINT_SIGNATURE_TIMEOUT_MS = Number(process.env.MINT_SIGNATURE_TIMEOUT_MS || 120000);
 const MAX_STAKE_QUERY_FAILURES = 3;
+const DEPOSIT_RECIPIENT_GRACE_MS = Number(process.env.DEPOSIT_RECIPIENT_GRACE_MS || 300000);
 
 function isBridgeEnabled() {
   const v = process.env.BRIDGE_ENABLED;
@@ -104,7 +105,18 @@ async function checkForDeposits(node, minConfirmations) {
     console.log(`  Payment ID: ${deposit.paymentId || 'none'}`);
     const recipient = parseRecipientFromPaymentId(node, deposit.paymentId);
     if (!recipient) {
-      console.log(`[Bridge] Skipping deposit ${txid}: no valid recipient in payment ID (will retry next poll)`);
+      const now = Date.now();
+      if (!node._unresolvedDeposits) node._unresolvedDeposits = new Map();
+      const first = node._unresolvedDeposits.get(txid) || now;
+      node._unresolvedDeposits.set(txid, first);
+      if (now - first >= DEPOSIT_RECIPIENT_GRACE_MS) {
+        console.log(`[Bridge] Marking deposit ${txid} as orphan: no valid recipient in payment ID`);
+        if (!node._processedDeposits) node._processedDeposits = new Set();
+        node._processedDeposits.add(txid);
+        node._unresolvedDeposits.delete(txid);
+      } else {
+        console.log(`[Bridge] Skipping deposit ${txid}: no valid recipient in payment ID`);
+      }
       continue;
     }
     try {
