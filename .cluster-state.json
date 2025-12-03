@@ -1,0 +1,28 @@
+{
+  "clusterId": "0x8765fd11d0eef85b7fbf9a7fb7bb0135eb8dbdc759007c0b132a1ebf87953063",
+  "members": [
+    "0x21d93d88B7FD47caaEfD15bbdF504397b30abDad",
+    "0x2F7702B9a66757AAFAB49b2348a06a60765a15BF",
+    "0x54F48f7Ac0da3B8956458030577c38278D36D56d",
+    "0x5e1777631706c0b742D878be2cB5af923Bbb743F",
+    "0x611e4Ee10F8dD6cd8f12adf8694E680A203259aa",
+    "0x64bf60B4899108A696213c67D16cA18cB34465f9",
+    "0xAc2cf454e48629B78d21D447d719eEEe9dC70273",
+    "0xae351BE136C0064a32Fd31C9Bb2928bB90452C18",
+    "0xE684ff569365F484d99449a669eebe2597fc4909",
+    "0xeb473520aF0bb59ccF6400Fc24F701E5e76391C5",
+    "0xfdb22e02E44449bf2ED61E47f84D501bDEc88625"
+  ],
+  "coordinator": null,
+  "coordinatorIndex": -1,
+  "finalAddress": "4AzcpyyGeS7Y4NbcW2LdYfPhLemgZeyxadXeG2vgjuArKV6Ja6qJtoq36PrZBh9gMdSj9rZ9KhpWj22fRqQb3CMaGuoKFaZ",
+  "finalized": true,
+  "pendingR3": null,
+  "finalizationStartAt": null,
+  "failoverAttempted": false,
+  "cooldownUntil": null,
+  "lastFailureAt": null,
+  "lastFailureReason": null,
+  "walletName": "znode_att_611e4Ee1_8765fd11_01",
+  "savedAt": 1764737187306
+}

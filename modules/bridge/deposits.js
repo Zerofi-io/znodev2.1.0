@@ -66,7 +66,13 @@ export async function syncDepositRequests(node) {
         const data = JSON.parse(payload);
         if (!data || data.type !== 'deposit-request') continue;
         if (!data.paymentId || !data.ethAddress || !data.signer || !data.signature) continue;
-        if (!ethers.isAddress(data.ethAddress)) continue;
+        let normalizedEthAddress;
+        try {
+          normalizedEthAddress = ethers.getAddress(data.ethAddress.toLowerCase());
+        } catch (e) {
+          continue;
+        }
+        data.ethAddress = normalizedEthAddress;
         if (!verifyDepositRequestSignature(data.paymentId, data.ethAddress, data.clusterId, data.requestKey, data.signature, data.signer)) continue;
         const signerStaked = await isNodeStaked(node, data.signer);
         if (!testMode && !signerStaked) continue;

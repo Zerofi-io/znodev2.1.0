@@ -144,11 +144,18 @@ async function handleAPIRequest(node, req, res, pathname, params, rateLimitWindo
     if (pathname === '/bridge/deposit/request' && req.method === 'POST') {
       const body = await readRequestBody(req);
       const { ethAddress, paymentId } = body;
-      if (!ethAddress || !ethers.isAddress(ethAddress)) {
+      let normalizedAddress;
+      try {
+        // Normalize address to handle mixed-case checksums
+        normalizedAddress = ethAddress ? ethers.getAddress(ethAddress.toLowerCase()) : null;
+      } catch (e) {
+        normalizedAddress = null;
+      }
+      if (!normalizedAddress) {
         return jsonResponse(res, 400, { error: 'Invalid ethAddress' });
       }
       try {
-        const result = await registerDepositRequest(node, ethAddress, paymentId);
+        const result = await registerDepositRequest(node, normalizedAddress, paymentId);
         return jsonResponse(res, 200, result);
       } catch (e) {
         return jsonResponse(res, 503, { error: e.message || 'Deposit routing unavailable' });
