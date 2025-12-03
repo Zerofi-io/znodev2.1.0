@@ -108,6 +108,24 @@ async function checkForDeposits(node, minConfirmations) {
     // Skip if already being processed (consensus in progress)
     if (!node._inProgressDeposits) node._inProgressDeposits = new Set();
     if (node._inProgressDeposits.has(txid)) continue;
+    let alreadyMinted = false;
+    if (node.bridge && typeof node.bridge.usedDepositIds === 'function') {
+      try {
+        const depositId = ethers.keccak256(ethers.toUtf8Bytes(txid));
+        alreadyMinted = await node.bridge.usedDepositIds(depositId);
+      } catch (e) {
+        console.log(`[Bridge] Failed to check usedDepositIds for deposit ${txid}:`, e.message || String(e));
+      }
+    }
+    if (alreadyMinted) {
+      console.log(`[Bridge] Skipping deposit ${txid}: already minted on-chain`);
+      if (!node._processedDeposits) node._processedDeposits = new Set();
+      node._processedDeposits.add(txid);
+      if (node._unresolvedDeposits) node._unresolvedDeposits.delete(txid);
+      if (node._failedConsensusDeposits) node._failedConsensusDeposits.delete(txid);
+      saveBridgeState(node);
+      continue;
+    }
     console.log(`[Bridge] New deposit detected: ${txid}`);
     console.log(`  Amount: ${deposit.amount / 1e12} XMR`);
     console.log(`  Confirmations: ${deposit.confirmations}`);

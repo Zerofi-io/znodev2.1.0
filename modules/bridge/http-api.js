@@ -2,6 +2,7 @@ import http from 'http';
 import { ethers } from 'ethers';
 import { metrics } from '../core/metrics.js';
 import consoleLogger from '../core/console-shim.js';
+import { saveBridgeState } from './bridge-state.js';
 import { startDepositMonitor, stopDepositMonitor, registerDepositRequest, getMintSignature, getAllPendingSignatures } from './deposits.js';
 import { startWithdrawalMonitor, stopWithdrawalMonitor, handleWithdrawalSignRequest, getWithdrawalStatus, getAllPendingWithdrawals } from './withdrawals.js';
 
@@ -189,7 +190,26 @@ async function handleAPIRequest(node, req, res, pathname, params, rateLimitWindo
       if (!txid || txid.length < 10) {
         return jsonResponse(res, 400, { error: 'Invalid txid' });
       }
+      let usedOnChain = false;
+      let depositId = null;
+      try {
+        depositId = ethers.keccak256(ethers.toUtf8Bytes(txid));
+      } catch (_ignored) {}
+      if (node.bridge && typeof node.bridge.usedDepositIds === 'function' && depositId) {
+        try {
+          usedOnChain = await node.bridge.usedDepositIds(depositId);
+        } catch (e) {
+          console.log('[BridgeAPI] Failed to check usedDepositIds for deposit status:', e.message || String(e));
+        }
+      }
       const signature = getMintSignature(node, txid);
+      if (usedOnChain) {
+        if (node._pendingMintSignatures) node._pendingMintSignatures.delete(txid);
+        if (!node._processedDeposits) node._processedDeposits = new Set();
+        node._processedDeposits.add(txid);
+        try { saveBridgeState(node); } catch (_ignored) {}
+        return jsonResponse(res, 200, { status: 'processed', message: 'Deposit already minted on-chain', depositId });
+      }
       if (signature) return jsonResponse(res, 200, { status: 'ready', ...signature });
       if (node._processedDeposits && node._processedDeposits.has(txid)) {
         return jsonResponse(res, 200, { status: 'processed', message: 'Deposit processed but no signature available (may have failed consensus)' });
@@ -197,7 +217,37 @@ async function handleAPIRequest(node, req, res, pathname, params, rateLimitWindo
       return jsonResponse(res, 200, { status: 'pending', message: 'Deposit not yet detected or confirmed' });
     }
     if (pathname === '/bridge/signatures' && req.method === 'GET') {
-      const signatures = getAllPendingSignatures(node);
+      let signatures = getAllPendingSignatures(node);
+      if (node.bridge && typeof node.bridge.usedDepositIds === 'function') {
+        const filtered = [];
+        let stateChanged = false;
+        for (const sig of signatures) {
+          let used = false;
+          try {
+            let depId = sig.depositId;
+            if (!depId && sig.xmrTxid) {
+              depId = ethers.keccak256(ethers.toUtf8Bytes(sig.xmrTxid));
+            }
+            if (depId) {
+              used = await node.bridge.usedDepositIds(depId);
+            }
+          } catch (e) {
+            console.log('[BridgeAPI] Failed to check usedDepositIds for signature:', e.message || String(e));
+          }
+          if (used) {
+            if (node._pendingMintSignatures) node._pendingMintSignatures.delete(sig.xmrTxid);
+            if (!node._processedDeposits) node._processedDeposits = new Set();
+            node._processedDeposits.add(sig.xmrTxid);
+            stateChanged = true;
+          } else {
+            filtered.push(sig);
+          }
+        }
+        if (stateChanged) {
+          try { saveBridgeState(node); } catch (_ignored) {}
+        }
+        signatures = filtered;
+      }
       return jsonResponse(res, 200, { signatures });
     }
     if (pathname.startsWith('/bridge/withdrawal/status/') && req.method === 'GET') {
