@@ -1091,6 +1091,10 @@ export async function monitorNetwork(node, DRY_RUN) {
     }
   };
 
+  if (node._monitorTimer) {
+    console.log('[WARN] Monitor loop already running; skipping duplicate start');
+    return;
+  }
   node._monitorTimer = setInterval(loop, monitorIntervalMs);
 }
 
