@@ -104,9 +104,7 @@ async function checkForDeposits(node, minConfirmations) {
     console.log(`  Payment ID: ${deposit.paymentId || 'none'}`);
     const recipient = parseRecipientFromPaymentId(node, deposit.paymentId);
     if (!recipient) {
-      console.log(`[Bridge] Skipping deposit ${txid}: no valid recipient in payment ID`);
-      if (!node._processedDeposits) node._processedDeposits = new Set();
-      node._processedDeposits.add(txid);
+      console.log(`[Bridge] Skipping deposit ${txid}: no valid recipient in payment ID (will retry next poll)`);
       continue;
     }
     try {
