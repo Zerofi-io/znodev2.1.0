@@ -12,5 +12,5 @@ export function pruneBlacklistEntries(blacklist, now) {
 }
 
 export function computeAdaptiveBlacklistCooldownMs(failureCount, baseCooldownMs) {
-  return baseCooldownMs * Math.pow(2, Math.min(failureCount - 3, 4));
+  return baseCooldownMs;
 }
