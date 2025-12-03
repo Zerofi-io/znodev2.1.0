@@ -372,6 +372,15 @@ export async function startDepositMonitor(node) {
     console.log('[Bridge] Cannot start deposit monitor: bridge contract not configured');
     return;
   }
+  // Join global bridge cluster for deposit request gossip
+  if (node.p2p && typeof node.p2p.joinCluster === 'function' && node.wallet) {
+    try {
+      const globalClusterId = GLOBAL_BRIDGE_CLUSTER_ID + ':' + GLOBAL_BRIDGE_SESSION;
+      await node.p2p.joinCluster(globalClusterId, [node.wallet.address], false);
+    } catch (e) {
+      console.log('[Bridge] Failed to join global deposit cluster:', e.message || String(e));
+    }
+  }
   loadBridgeState(node);
   node._depositMonitorRunning = true;
   const pollIntervalMs = Number(process.env.DEPOSIT_POLL_INTERVAL_MS || 30000);
@@ -427,7 +436,9 @@ export async function registerDepositRequest(node, ethAddress, paymentId) {
         signature,
       });
       await node.p2p.broadcastRoundData(GLOBAL_BRIDGE_CLUSTER_ID, GLOBAL_BRIDGE_SESSION, DEPOSIT_REQUEST_ROUND, payload);
-    } catch (e) {}
+    } catch (e) {
+      console.log('[Bridge] Failed to broadcast deposit request:', e.message || String(e));
+    }
   }
   saveBridgeState(node);
   let integratedAddress = null;
