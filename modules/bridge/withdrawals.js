@@ -34,7 +34,7 @@ export async function startWithdrawalMonitor(node) {
       node._withdrawalMonitorRunning = false;
       return;
     }
-    const filter = node.bridge.filters.TokensBurned(null, activeClusterId);
+    const filter = node.bridge.filters.TokensBurned();
     const currentBlock = await node.provider.getBlockNumber();
     const fromBlock = Math.max(0, currentBlock - 300);
     try {
@@ -43,7 +43,10 @@ export async function startWithdrawalMonitor(node) {
     } catch (e) {
       console.log('[Withdrawal] Failed to query past burn events:', e.message || String(e));
     }
-    node.bridge.on(filter, async (...args) => { const event = args[args.length - 1]; await handleBurnEvent(node, event); });
+    node.bridge.on('TokensBurned', async (...args) => {
+      const event = args[args.length - 1];
+      await handleBurnEvent(node, event);
+    });
     console.log('[Withdrawal] Now listening for TokensBurned events');
     setupWithdrawalClaimListener(node);
   } catch (e) {
