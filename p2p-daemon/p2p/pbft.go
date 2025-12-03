@@ -151,6 +151,28 @@ func pbftCanonicalizeMembers(members []string) []string {
 	return result
 }
 
+func pbftFaultTolerance(n int) int {
+	if n <= 1 {
+		return 0
+	}
+	return (n - 1) / 3
+}
+
+func pbftQuorum(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	f := pbftFaultTolerance(n)
+	q := 2*f + 1
+	if q < 1 {
+		q = 1
+	}
+	if q > n {
+		q = n
+	}
+	return q
+}
+
 // computePBFTDigest computes Keccak256 hash of phase data
 func computePBFTDigest(clusterID, phase string, data string) string {
 	input := fmt.Sprintf("%s|%s|%s", strings.ToLower(clusterID), phase, data)
@@ -386,9 +408,10 @@ func (pm *PBFTManager) handlePrepare(msg *PBFTMessage) {
 	log.Printf("[PBFT] Received PREPARE from %s (%d/%d) phase=%s",
 		msg.Address[:8], len(cs.Prepares), len(cs.Members), msg.Phase)
 
-	// Check if we have 11/11 PREPAREs (strict requirement)
-	if len(cs.Prepares) == len(cs.Members) {
-		log.Printf("[PBFT] All %d PREPAREs received for %s, broadcasting COMMIT", len(cs.Members), msg.Phase)
+	// Check if we have reached PREPARE quorum
+	quorum := pbftQuorum(len(cs.Members))
+	if len(cs.Prepares) >= quorum {
+		log.Printf("[PBFT] PREPARE quorum reached (%d/%d) for %s, broadcasting COMMIT", len(cs.Prepares), quorum, msg.Phase)
 		go pm.broadcastCommit(cs)
 	}
 }
@@ -434,8 +457,9 @@ func (pm *PBFTManager) handleCommit(msg *PBFTMessage) {
 	log.Printf("[PBFT] Received COMMIT from %s (%d/%d) phase=%s",
 		msg.Address[:8], len(cs.Commits), len(cs.Members), msg.Phase)
 
-	// Check if we have 11/11 COMMITs (strict requirement)
-	if len(cs.Commits) == len(cs.Members) && !cs.Completed {
+	// Check if we have COMMIT quorum
+	quorum := pbftQuorum(len(cs.Members))
+	if len(cs.Commits) >= quorum && !cs.Completed {
 		cs.Completed = true
 		log.Printf("[PBFT] CONSENSUS REACHED for %s phase=%s with %d/%d nodes",
 			msg.ClusterID[:8], msg.Phase, len(cs.Commits), len(cs.Members))
@@ -475,10 +499,11 @@ func (pm *PBFTManager) handleViewChange(msg *PBFTMessage) {
 		viewVotes[v]++
 	}
 
-	// Need 11/11 for view change (strict requirement)
+	// Need quorum for view change (2f+1)
+	quorum := pbftQuorum(len(cs.Members))
 	for view, count := range viewVotes {
-		if count == len(cs.Members) {
-			log.Printf("[PBFT] VIEW CHANGE to view %d approved by all %d members", view, count)
+		if count >= quorum {
+			log.Printf("[PBFT] VIEW CHANGE to view %d approved by %d/%d members", view, count, len(cs.Members))
 			cs.ViewNumber = view
 			cs.Coordinator = getPBFTCoordinator(cs.Members, view, cs.ClusterID)
 			cs.Prepares = make(map[string]*PBFTMessage)
@@ -575,11 +600,12 @@ func (pm *PBFTManager) broadcastPrepare(cs *PBFTConsensusState) {
 	log.Printf("[PBFT] Broadcasting PREPARE for %s phase=%s (%d/%d)", clusterID[:8], phase, prepareCount, memberCount)
 	pm.broadcastToMembers(clusterID, members, msg)
 
-	// Check if we now have all prepares (after adding our own)
+	// Check if we now have PREPARE quorum (after adding our own)
 	cs.mu.Lock()
-	if len(cs.Prepares) == len(cs.Members) {
+	quorum := pbftQuorum(len(cs.Members))
+	if len(cs.Prepares) >= quorum {
 		cs.mu.Unlock()
-		log.Printf("[PBFT] All %d PREPAREs collected, broadcasting COMMIT", memberCount)
+		log.Printf("[PBFT] PREPARE quorum reached (%d/%d), broadcasting COMMIT", len(cs.Prepares), quorum)
 		pm.broadcastCommit(cs)
 	} else {
 		cs.mu.Unlock()
@@ -628,7 +654,8 @@ func (pm *PBFTManager) broadcastCommit(cs *PBFTConsensusState) {
 
 	// Check if consensus reached after adding our own
 	cs.mu.Lock()
-	if len(cs.Commits) == len(cs.Members) && !cs.Completed {
+	quorum := pbftQuorum(len(cs.Members))
+	if len(cs.Commits) >= quorum && !cs.Completed {
 		cs.Completed = true
 		log.Printf("[PBFT] CONSENSUS REACHED for %s phase=%s with %d/%d nodes",
 			clusterID[:8], phase, len(cs.Commits), len(cs.Members))

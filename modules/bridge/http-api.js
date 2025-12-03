@@ -98,6 +98,26 @@ function jsonResponse(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
+function isBridgeReadyForDeposit(node) {
+  const moneroHealth = node.moneroHealth || MoneroHealth.HEALTHY;
+  if (moneroHealth !== MoneroHealth.HEALTHY) {
+    return { ok: false, reason: 'Monero backend not healthy' };
+  }
+  if (!node._clusterFinalized || !node._clusterFinalAddress) {
+    return { ok: false, reason: 'Cluster not finalized' };
+  }
+  if (!node.p2p || !node.p2p.node) {
+    return { ok: false, reason: 'P2P not connected' };
+  }
+  const members = Array.isArray(node._clusterMembers) ? node._clusterMembers : [];
+  const self = node.wallet && node.wallet.address ? node.wallet.address.toLowerCase() : null;
+  const inCluster = self && members.some((m) => m && m.toLowerCase() === self);
+  if (!inCluster) {
+    return { ok: false, reason: 'Node not member of active cluster' };
+  }
+  return { ok: true };
+}
+
 function readRequestBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -146,13 +166,16 @@ async function handleAPIRequest(node, req, res, pathname, params, rateLimitWindo
       const { ethAddress, paymentId } = body;
       let normalizedAddress;
       try {
-        // Normalize address to handle mixed-case checksums
         normalizedAddress = ethAddress ? ethers.getAddress(ethAddress.toLowerCase()) : null;
       } catch (e) {
         normalizedAddress = null;
       }
       if (!normalizedAddress) {
         return jsonResponse(res, 400, { error: 'Invalid ethAddress' });
+      }
+      const ready = isBridgeReadyForDeposit(node);
+      if (!ready.ok) {
+        return jsonResponse(res, 503, { error: 'Bridge not ready', reason: ready.reason });
       }
       try {
         const result = await registerDepositRequest(node, normalizedAddress, paymentId);

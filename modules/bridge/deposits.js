@@ -408,11 +408,23 @@ export function stopDepositMonitor(node) {
 
 export async function registerDepositRequest(node, ethAddress, paymentId) {
   if (!node._pendingDepositRequests) node._pendingDepositRequests = new Map();
+  // Ensure node is in an active, finalized cluster before issuing deposit address
+  if (!node._clusterFinalized || !node._clusterFinalAddress || !Array.isArray(node._clusterMembers) || node._clusterMembers.length === 0) {
+    throw new Error('Bridge cluster not ready');
+  }
+  const self = node.wallet && node.wallet.address ? node.wallet.address.toLowerCase() : null;
+  if (!self || !node._clusterMembers.some((m) => m && m.toLowerCase() === self)) {
+    throw new Error('Node not member of active cluster');
+  }
   let id = paymentId;
   if (!id) id = crypto.randomBytes(8).toString('hex');
   const sel = await selectClusterForDeposit(node, ethAddress, id);
   let clusterId = sel.clusterId || node._activeClusterId || ethers.ZeroHash;
   let requestKey = sel.requestKey || null;
+  if (node._activeClusterId && clusterId && clusterId !== node._activeClusterId) {
+    throw new Error('Selected cluster does not match active cluster on this node');
+  }
+  clusterId = node._activeClusterId || clusterId;
   let finalAddress = null;
   if (node.registry && clusterId && clusterId !== ethers.ZeroHash) {
     try {
@@ -438,6 +450,7 @@ export async function registerDepositRequest(node, ethAddress, paymentId) {
       await node.p2p.broadcastRoundData(GLOBAL_BRIDGE_CLUSTER_ID, GLOBAL_BRIDGE_SESSION, DEPOSIT_REQUEST_ROUND, payload);
     } catch (e) {
       console.log('[Bridge] Failed to broadcast deposit request:', e.message || String(e));
+      throw new Error('Failed to broadcast deposit request');
     }
   }
   saveBridgeState(node);
