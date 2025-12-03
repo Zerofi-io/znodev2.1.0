@@ -5,3 +5,4 @@ node_modules/
 *.pid
 .DS_Store
 .cluster-blacklist.json
+.cluster-state.json
