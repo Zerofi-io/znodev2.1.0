@@ -846,6 +846,22 @@ class ZNode {
     if (this.p2p && typeof this.p2p.setActiveCluster === 'function') {
       this.p2p.setActiveCluster(effectiveClusterId);
     }
+    // Ensure a PBFT cluster exists for bridge consensus and mint-signature rounds
+    if (this.p2p && typeof this.p2p.joinCluster === 'function') {
+      try {
+        const sessionId = this._sessionId || 'bridge';
+        const memberList = Array.isArray(members) && members.length ? members : (this._clusterMembers || []);
+        if (memberList && memberList.length) {
+          this.p2p
+            .joinCluster(effectiveClusterId + ':' + sessionId, memberList, false)
+            .catch((e) => {
+              console.log('[Bridge] Failed to join PBFT cluster for bridge session:', e.message || String(e));
+            });
+        }
+      } catch (e) {
+        console.log('[Bridge] Error while initializing bridge PBFT cluster:', e.message || String(e));
+      }
+    }
     if (typeof this._saveClusterState === 'function') {
       this._saveClusterState();
     }
