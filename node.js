@@ -2753,7 +2753,7 @@ class ZNode {
       this._saveClusterBlacklist();
     };
 
-    const roundTimeoutPrepare = Number(process.env.ROUND_TIMEOUT_PREPARE_MS || 300000);
+    const roundTimeoutPrepare = Number(process.env.ROUND_TIMEOUT_PREPARE_MS || 600000);
     const roundTimeoutExchange = Number(process.env.ROUND_TIMEOUT_EXCHANGE_MS || 180000);
 
     try {
