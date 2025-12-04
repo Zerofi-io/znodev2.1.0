@@ -1,0 +1,18 @@
+[Unit]
+Description=ZeroFi Node v2.1.0 (with cluster aggregator)
+After=network.target
+Wants=cluster-aggregator.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/znodev2.1.0
+ExecStart=/usr/bin/node node.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/root/znodev2.1.0/znode.log
+StandardError=append:/root/znodev2.1.0/znode.log
+EnvironmentFile=/root/znodev2.1.0/.env
+
+[Install]
+WantedBy=multi-user.target
