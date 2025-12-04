@@ -118,21 +118,12 @@ async function fetchClusterStatus(baseUrl) {
 function isNodeEligible(status) {
   if (!status || typeof status !== 'object') return false;
   if (status.eligibleForBridging === true) return true;
-
-  const clusterState = status.clusterState;
   const cluster = status.cluster || {};
   const finalized = !!cluster.finalized;
   const moneroHealth = status.monero && status.monero.health;
   const p2p = status.p2p || {};
   const p2pConnected = !!p2p.connected;
-
-  return (
-    !!cluster.id &&
-    finalized &&
-    clusterState === 'ACTIVE' &&
-    moneroHealth === 'HEALTHY' &&
-    p2pConnected
-  );
+  return !!cluster.id && finalized && moneroHealth === 'HEALTHY' && p2pConnected;
 }
 
 
@@ -248,7 +239,7 @@ async function aggregateClusters() {
   }
 
   const filtered = Array.from(clusters.values()).filter(
-    (c) => c.eligibleNodes >= MIN_ELIGIBLE_NODES && !!c.finalAddress,
+    (c) => c.eligibleNodes > 0 && !!c.finalAddress,
   );
 
   return {
