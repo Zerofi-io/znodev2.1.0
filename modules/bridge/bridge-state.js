@@ -34,8 +34,20 @@ export function loadBridgeState(node) {
       console.log(`[Bridge] Loaded ${node._pendingDepositRequests.size} pending deposit requests from disk`);
     }
     if (Array.isArray(data.processedWithdrawals)) {
-      node._processedWithdrawals = new Set(data.processedWithdrawals);
+      const set = new Set();
+      for (const h of data.processedWithdrawals) {
+        if (typeof h === 'string') set.add(h.toLowerCase());
+      }
+      node._processedWithdrawals = set;
       console.log(`[Bridge] Loaded ${node._processedWithdrawals.size} processed withdrawals from disk`);
+    }
+    if (data.pendingWithdrawals && typeof data.pendingWithdrawals === 'object') {
+      const map = new Map();
+      for (const [k, v] of Object.entries(data.pendingWithdrawals)) {
+        map.set(k.toLowerCase(), v);
+      }
+      node._pendingWithdrawals = map;
+      console.log(`[Bridge] Loaded ${node._pendingWithdrawals.size} pending withdrawals from disk`);
     }
   } catch (e) {
     console.log('[Bridge] Failed to load bridge state:', e.message || String(e));
@@ -51,6 +63,7 @@ export function saveBridgeState(node) {
       pendingMintSignatures: node._pendingMintSignatures ? Object.fromEntries(node._pendingMintSignatures) : {},
       pendingDepositRequests: node._pendingDepositRequests ? Object.fromEntries(node._pendingDepositRequests) : {},
       processedWithdrawals: node._processedWithdrawals ? Array.from(node._processedWithdrawals) : [],
+      pendingWithdrawals: node._pendingWithdrawals ? Object.fromEntries(node._pendingWithdrawals) : {},
     };
     fs.writeFileSync(statePath, JSON.stringify(data, null, 2), { mode: 0o600 });
   } catch (e) {

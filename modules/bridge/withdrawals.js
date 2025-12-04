@@ -118,9 +118,10 @@ function setupWithdrawalClaimListener(node) {
         try {
           const data = JSON.parse(payload);
           if (data.type === 'withdrawal-claim' && data.txHash && data.claimer) {
-            const existing = node._withdrawalClaims.get(data.txHash);
+            const key = String(data.txHash).toLowerCase();
+            const existing = node._withdrawalClaims.get(key);
             if (!existing || existing.claimer !== data.claimer) {
-              node._withdrawalClaims.set(data.txHash, { claimer: data.claimer, timestamp: Date.now() });
+              node._withdrawalClaims.set(key, { claimer: data.claimer, timestamp: Date.now() });
             }
           }
         } catch (_ignored) {}
@@ -139,30 +140,27 @@ async function handleBurnEvent(node, event) {
       console.log('[Withdrawal] Burn event debug:', describeEventForDebug(event));
       return;
     }
-
     const { log, args, txHash, blockNumber } = normalized;
-
     node._processedWithdrawals = node._processedWithdrawals || new Set();
-    if (node._processedWithdrawals.has(txHash)) return;
-
+    const key = txHash.toLowerCase();
+    if (node._processedWithdrawals.has(key)) return;
     const activeClusterId = node._activeClusterId;
     if (!activeClusterId) {
       console.log('[Withdrawal] No activeClusterId set, skipping burn event');
       return;
     }
-
     const user = args[0] ?? args.user;
     const clusterIdFromEvent = args[1] ?? args.clusterId;
     const xmrAddress = args[2] ?? args.xmrAddress;
     const amount = args[3] ?? args.burnAmount ?? args.amount;
     const fee = args[4] ?? args.fee ?? 0n;
-
+    let markProcessed = false;
     if (amount == null) {
       console.log('[Withdrawal] Burn event missing amount, skipping');
-      node._processedWithdrawals.add(txHash);
+      markProcessed = true;
+      node._processedWithdrawals.add(key);
       return;
     }
-
     console.log('[Withdrawal] TokensBurned event detected:');
     console.log(`  TX: ${txHash}`);
     console.log(`  User: ${user}`);
@@ -178,7 +176,6 @@ async function handleBurnEvent(node, event) {
     } catch (e) {
       console.log('[Withdrawal] Failed to format fee for logging:', e.message || String(e));
     }
-
     if (
       typeof clusterIdFromEvent === 'string' &&
       typeof activeClusterId === 'string' &&
@@ -189,13 +186,12 @@ async function handleBurnEvent(node, event) {
       );
       return;
     }
-
     if (!isValidMoneroAddress(xmrAddress)) {
       console.log(`[Withdrawal] Invalid Monero address, skipping: ${xmrAddress}`);
-      node._processedWithdrawals.add(txHash);
+      markProcessed = true;
+      node._processedWithdrawals.add(key);
       return;
     }
-
     const xmrAtomicAmount = BigInt(amount) / BigInt(1e6);
     const withdrawal = {
       txHash,
@@ -210,6 +206,7 @@ async function handleBurnEvent(node, event) {
       const consensusResult = await runWithdrawalConsensus(node, withdrawal);
       if (consensusResult.success) {
         console.log(`[Withdrawal] Consensus reached for withdrawal ${txHash.slice(0, 18)}...`);
+        markProcessed = true;
         await executeWithdrawalWithCascade(node, withdrawal);
       } else {
         console.log(
@@ -222,7 +219,7 @@ async function handleBurnEvent(node, event) {
         e.message || String(e),
       );
     }
-    node._processedWithdrawals.add(txHash);
+    if (markProcessed) node._processedWithdrawals.add(key);
   } catch (e) {
     console.log('[Withdrawal] Error handling burn event:', e.message || String(e));
   }
@@ -256,7 +253,8 @@ function getWithdrawalTurnIndex(node) {
 async function executeWithdrawalWithCascade(node, withdrawal) {
   const myIndex = getWithdrawalTurnIndex(node);
   if (myIndex < 0) return;
-  const existingClaim = node._withdrawalClaims?.get(withdrawal.txHash);
+  const key = withdrawal.txHash.toLowerCase();
+  const existingClaim = node._withdrawalClaims?.get(key);
   if (existingClaim && Date.now() - existingClaim.timestamp < WITHDRAWAL_CASCADE_INTERVAL_MS * 2) {
     const claimIndex = getWithdrawalTurnIndex({ ...node, wallet: { address: existingClaim.claimer } });
     if (claimIndex >= 0 && claimIndex < myIndex) {
@@ -271,14 +269,14 @@ async function executeWithdrawalWithCascade(node, withdrawal) {
   if (waitTime > 0) {
     console.log(`[Withdrawal] My turn index: ${myIndex}, waiting ${Math.round(waitTime / 1000)}s`);
     await new Promise((resolve) => setTimeout(resolve, waitTime));
-    const lateClaim = node._withdrawalClaims?.get(withdrawal.txHash);
+    const lateClaim = node._withdrawalClaims?.get(key);
     if (lateClaim && Date.now() - lateClaim.timestamp < WITHDRAWAL_CASCADE_INTERVAL_MS) {
       console.log('[Withdrawal] Another node claimed during wait, aborting');
       return;
     }
   }
   node._withdrawalClaims = node._withdrawalClaims || new Map();
-  node._withdrawalClaims.set(withdrawal.txHash, { claimer: node.wallet.address, timestamp: Date.now() });
+  node._withdrawalClaims.set(key, { claimer: node.wallet.address, timestamp: Date.now() });
   try {
     await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', 9899, JSON.stringify({ type: 'withdrawal-claim', txHash: withdrawal.txHash, claimer: node.wallet.address }));
   } catch (_ignored) {}
@@ -289,7 +287,8 @@ async function executeWithdrawal(node, withdrawal) {
   console.log(`[Withdrawal] Executing withdrawal to ${withdrawal.xmrAddress}`);
   console.log(`  Amount: ${Number(withdrawal.xmrAmount) / 1e12} XMR`);
   node._pendingWithdrawals = node._pendingWithdrawals || new Map();
-  node._pendingWithdrawals.set(withdrawal.txHash, { ...withdrawal, status: 'pending', startedAt: Date.now() });
+  const key = withdrawal.txHash.toLowerCase();
+  node._pendingWithdrawals.set(key, { ...withdrawal, status: 'pending', startedAt: Date.now() });
   try {
     console.log('[Withdrawal] Creating multisig transfer transaction...');
     const destinations = [{ address: withdrawal.xmrAddress, amount: BigInt(withdrawal.xmrAmount) }];
@@ -299,12 +298,20 @@ async function executeWithdrawal(node, withdrawal) {
       console.log('[Withdrawal] Transfer transaction created');
     } catch (e) {
       console.log('[Withdrawal] Failed to create transfer:', e.message || String(e));
-      node._pendingWithdrawals.get(withdrawal.txHash).status = 'failed';
-      node._pendingWithdrawals.get(withdrawal.txHash).error = e.message;
+      const pending = node._pendingWithdrawals.get(key);
+      if (pending) {
+        pending.status = 'failed';
+        pending.error = e.message;
+      }
       return;
     }
     if (!txData || !txData.txDataHex) {
       console.log('[Withdrawal] No transaction data returned from transfer');
+      const pending = node._pendingWithdrawals.get(key);
+      if (pending) {
+        pending.status = 'failed';
+        pending.error = 'No transaction data returned from transfer';
+      }
       return;
     }
     console.log('[Withdrawal] Broadcasting unsigned tx for multisig signing...');
@@ -321,7 +328,8 @@ async function executeWithdrawal(node, withdrawal) {
     const complete = await node.p2p.waitForRoundCompletion(node._activeClusterId, node._sessionId || 'bridge', signatureRound, node._clusterMembers, signatureTimeoutMs);
     if (!complete) {
       console.log('[Withdrawal] Failed to collect enough signatures');
-      node._pendingWithdrawals.get(withdrawal.txHash).status = 'signing_failed';
+      const pending = node._pendingWithdrawals.get(key);
+      if (pending) pending.status = 'signing_failed';
       return;
     }
     console.log('[Withdrawal] Combining signatures and submitting transaction...');
@@ -331,25 +339,35 @@ async function executeWithdrawal(node, withdrawal) {
     try { signedTx = await node.monero.signMultisig(txData.txDataHex); }
     catch (e) {
       console.log('[Withdrawal] Failed to sign multisig tx:', e.message || String(e));
-      node._pendingWithdrawals.get(withdrawal.txHash).status = 'sign_failed';
+      const pending = node._pendingWithdrawals.get(key);
+      if (pending) pending.status = 'sign_failed';
       return;
     }
     try {
       const submitResult = await node.monero.call('submit_multisig', { tx_data_hex: signedTx.txDataHex || txData.txDataHex }, 180000);
       console.log('[Withdrawal] Transaction submitted successfully');
       console.log(`  TX Hash(es): ${submitResult.tx_hash_list ? submitResult.tx_hash_list.join(', ') : 'unknown'}`);
-      node._pendingWithdrawals.get(withdrawal.txHash).status = 'completed';
-      node._pendingWithdrawals.get(withdrawal.txHash).xmrTxHashes = submitResult.tx_hash_list;
+      const pending = node._pendingWithdrawals.get(key);
+      if (pending) {
+        pending.status = 'completed';
+        pending.xmrTxHashes = submitResult.tx_hash_list;
+      }
     } catch (e) {
       console.log('[Withdrawal] Failed to submit transaction:', e.message || String(e));
-      node._pendingWithdrawals.get(withdrawal.txHash).status = 'submit_failed';
-      node._pendingWithdrawals.get(withdrawal.txHash).error = e.message;
+      const pending = node._pendingWithdrawals.get(key);
+      if (pending) {
+        pending.status = 'submit_failed';
+        pending.error = e.message;
+      }
     }
   } catch (e) {
     console.log('[Withdrawal] Withdrawal execution error:', e.message || String(e));
-    if (node._pendingWithdrawals && node._pendingWithdrawals.has(withdrawal.txHash)) {
-      node._pendingWithdrawals.get(withdrawal.txHash).status = 'error';
-      node._pendingWithdrawals.get(withdrawal.txHash).error = e.message;
+    if (node._pendingWithdrawals) {
+      const pending = node._pendingWithdrawals.get(key);
+      if (pending) {
+        pending.status = 'error';
+        pending.error = e.message;
+      }
     }
   }
 }
@@ -375,8 +393,9 @@ export async function handleWithdrawalSignRequest(node, data) {
 }
 
 export function getWithdrawalStatus(node, ethTxHash) {
-  if (!node._pendingWithdrawals) return null;
-  return node._pendingWithdrawals.get(ethTxHash) || null;
+  if (!node._pendingWithdrawals || !ethTxHash) return null;
+  const key = String(ethTxHash).toLowerCase();
+  return node._pendingWithdrawals.get(key) || null;
 }
 
 export function getAllPendingWithdrawals(node) {
