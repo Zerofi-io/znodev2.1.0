@@ -49,6 +49,8 @@ function isBridgeEnabled() {
 }
 
 const WITHDRAWAL_CASCADE_INTERVAL_MS = Number(process.env.WITHDRAWAL_CASCADE_INTERVAL_MS || 60000);
+const REQUIRED_WITHDRAWAL_SIGNATURES = 7;
+
 
 export async function startWithdrawalMonitor(node) {
   if (node._withdrawalMonitorRunning) return;
@@ -325,16 +327,30 @@ async function executeWithdrawal(node, withdrawal) {
     console.log('[Withdrawal] Waiting for multisig signatures...');
     const signatureTimeoutMs = Number(process.env.WITHDRAWAL_SIGN_TIMEOUT_MS || 300000);
     const signatureRound = 9901;
-    const complete = await node.p2p.waitForRoundCompletion(node._activeClusterId, node._sessionId || 'bridge', signatureRound, node._clusterMembers, signatureTimeoutMs);
-    if (!complete) {
+    const complete = await node.p2p.waitForRoundCompletion(
+      node._activeClusterId,
+      node._sessionId || 'bridge',
+      signatureRound,
+      node._clusterMembers,
+      signatureTimeoutMs,
+    );
+    const signatures = await node.p2p.getPeerPayloads(
+      node._activeClusterId,
+      node._sessionId || 'bridge',
+      signatureRound,
+      node._clusterMembers,
+    );
+    if (!complete && signatures.length < REQUIRED_WITHDRAWAL_SIGNATURES) {
+      console.log('[Withdrawal] Timeout waiting for multisig signatures');
+    }
+    console.log(`[Withdrawal] Collected ${signatures.length} multisig signatures`);
+    if (signatures.length < REQUIRED_WITHDRAWAL_SIGNATURES) {
       console.log('[Withdrawal] Failed to collect enough signatures');
       const pending = node._pendingWithdrawals.get(key);
       if (pending) pending.status = 'signing_failed';
       return;
     }
     console.log('[Withdrawal] Combining signatures and submitting transaction...');
-    const signatures = await node.p2p.getPeerPayloads(node._activeClusterId, node._sessionId || 'bridge', signatureRound, node._clusterMembers);
-    console.log(`[Withdrawal] Collected ${signatures.length} multisig signatures`);
     let signedTx;
     try { signedTx = await node.monero.signMultisig(txData.txDataHex); }
     catch (e) {
