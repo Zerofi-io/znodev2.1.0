@@ -1,6 +1,48 @@
 import { ethers } from 'ethers';
 import { isValidMoneroAddress } from './bridge-service.js';
 
+function normalizeEthersEvent(rawEvent) {
+  if (!rawEvent) return null;
+
+  const eventLike = rawEvent;
+  const maybeLog = eventLike.log;
+
+  const log = maybeLog && typeof maybeLog === 'object' && 'transactionHash' in maybeLog
+    ? maybeLog
+    : eventLike;
+
+  const args = eventLike.args ?? log.args ?? null;
+
+  const txHash = log && log.transactionHash ? log.transactionHash : null;
+  const blockNumber =
+    log && (typeof log.blockNumber === 'number' || typeof log.blockNumber === 'bigint')
+      ? log.blockNumber
+      : null;
+
+  if (!txHash || !args) {
+    return null;
+  }
+
+  return { log, args, txHash, blockNumber };
+}
+
+function describeEventForDebug(rawEvent) {
+  try {
+    if (!rawEvent || typeof rawEvent !== 'object') return String(rawEvent);
+    const summary = {
+      keys: Object.keys(rawEvent),
+      hasLog: !!rawEvent.log,
+      hasArgs: !!rawEvent.args,
+    };
+    if (rawEvent.log && typeof rawEvent.log === 'object') {
+      summary.logKeys = Object.keys(rawEvent.log);
+    }
+    return JSON.stringify(summary);
+  } catch (_ignored) {
+    return '[unserializable event]';
+  }
+}
+
 function isBridgeEnabled() {
   const v = process.env.BRIDGE_ENABLED;
   return v === undefined || v === '1';
@@ -91,51 +133,94 @@ function setupWithdrawalClaimListener(node) {
 
 async function handleBurnEvent(node, event) {
   try {
-    if (!event || !event.transactionHash || !event.args) {
-      console.log('[Withdrawal] Burn event missing expected fields, skipping');
+    const normalized = normalizeEthersEvent(event);
+    if (!normalized) {
+      console.log('[Withdrawal] Burn event missing expected fields after normalization, skipping');
+      console.log('[Withdrawal] Burn event debug:', describeEventForDebug(event));
       return;
     }
-    const txHash = event.transactionHash;
+
+    const { log, args, txHash, blockNumber } = normalized;
+
     node._processedWithdrawals = node._processedWithdrawals || new Set();
     if (node._processedWithdrawals.has(txHash)) return;
+
     const activeClusterId = node._activeClusterId;
     if (!activeClusterId) {
       console.log('[Withdrawal] No activeClusterId set, skipping burn event');
       return;
     }
-    const user = event.args[0] ?? event.args.user;
-    const clusterIdFromEvent = event.args[1] ?? event.args.clusterId;
-    const xmrAddress = event.args[2] ?? event.args.xmrAddress;
-    const amount = event.args[3] ?? event.args.burnAmount ?? event.args.amount;
-    const fee = event.args[4] ?? event.args.fee;
+
+    const user = args[0] ?? args.user;
+    const clusterIdFromEvent = args[1] ?? args.clusterId;
+    const xmrAddress = args[2] ?? args.xmrAddress;
+    const amount = args[3] ?? args.burnAmount ?? args.amount;
+    const fee = args[4] ?? args.fee ?? 0n;
+
+    if (amount == null) {
+      console.log('[Withdrawal] Burn event missing amount, skipping');
+      node._processedWithdrawals.add(txHash);
+      return;
+    }
+
     console.log('[Withdrawal] TokensBurned event detected:');
     console.log(`  TX: ${txHash}`);
     console.log(`  User: ${user}`);
     console.log(`  Cluster ID: ${clusterIdFromEvent}`);
     console.log(`  XMR Address: ${xmrAddress}`);
-    console.log(`  Amount: ${ethers.formatEther(amount)} zXMR`);
-    console.log(`  Fee: ${ethers.formatEther(fee)} zXMR`);
-    if (typeof clusterIdFromEvent === 'string' && typeof activeClusterId === 'string' && clusterIdFromEvent.toLowerCase() !== activeClusterId.toLowerCase()) {
-      console.log(`[Withdrawal] Burn event clusterId mismatch (event=${clusterIdFromEvent}, local=${activeClusterId}), skipping`);
+    try {
+      console.log(`  Amount: ${ethers.formatEther(amount)} zXMR`);
+    } catch (e) {
+      console.log('[Withdrawal] Failed to format amount for logging:', e.message || String(e));
+    }
+    try {
+      console.log(`  Fee: ${ethers.formatEther(fee)} zXMR`);
+    } catch (e) {
+      console.log('[Withdrawal] Failed to format fee for logging:', e.message || String(e));
+    }
+
+    if (
+      typeof clusterIdFromEvent === 'string' &&
+      typeof activeClusterId === 'string' &&
+      clusterIdFromEvent.toLowerCase() !== activeClusterId.toLowerCase()
+    ) {
+      console.log(
+        `[Withdrawal] Burn event clusterId mismatch (event=${clusterIdFromEvent}, local=${activeClusterId}), skipping`,
+      );
       return;
     }
+
     if (!isValidMoneroAddress(xmrAddress)) {
       console.log(`[Withdrawal] Invalid Monero address, skipping: ${xmrAddress}`);
       node._processedWithdrawals.add(txHash);
       return;
     }
+
     const xmrAtomicAmount = BigInt(amount) / BigInt(1e6);
-    const withdrawal = { txHash, user, xmrAddress, zxmrAmount: amount.toString(), xmrAmount: xmrAtomicAmount.toString(), blockNumber: event.blockNumber, timestamp: Date.now() };
+    const withdrawal = {
+      txHash,
+      user,
+      xmrAddress,
+      zxmrAmount: amount.toString(),
+      xmrAmount: xmrAtomicAmount.toString(),
+      blockNumber,
+      timestamp: Date.now(),
+    };
     try {
       const consensusResult = await runWithdrawalConsensus(node, withdrawal);
       if (consensusResult.success) {
         console.log(`[Withdrawal] Consensus reached for withdrawal ${txHash.slice(0, 18)}...`);
         await executeWithdrawalWithCascade(node, withdrawal);
       } else {
-        console.log(`[Withdrawal] Consensus failed for ${txHash.slice(0, 18)}: ${consensusResult.reason}`);
+        console.log(
+          `[Withdrawal] Consensus failed for ${txHash.slice(0, 18)}: ${consensusResult.reason}`,
+        );
       }
     } catch (e) {
-      console.log(`[Withdrawal] Consensus error for ${txHash.slice(0, 18)}:`, e.message || String(e));
+      console.log(
+        `[Withdrawal] Consensus error for ${txHash.slice(0, 18)}:`,
+        e.message || String(e),
+      );
     }
     node._processedWithdrawals.add(txHash);
   } catch (e) {
