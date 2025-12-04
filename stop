@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 PID_FILE="$SCRIPT_DIR/znode.pid"
+AGG_PID_FILE="$SCRIPT_DIR/cluster-aggregator.pid"
 P2P_SOCKET="/tmp/znode-p2p.sock"
 SERVICE_NAME="znode.service"
 
@@ -29,6 +30,31 @@ stop_p2p_daemon() {
   fi
 }
 
+stop_cluster_aggregator() {
+  if [ -f "$AGG_PID_FILE" ]; then
+    local AGG_PID
+    AGG_PID="$(cat "$AGG_PID_FILE" 2>/dev/null || true)"
+    if [ -n "$AGG_PID" ] && kill -0 "$AGG_PID" 2>/dev/null; then
+      echo "[stop] Stopping cluster-aggregator (PID $AGG_PID)..."
+      kill "$AGG_PID" 2>/dev/null || true
+      sleep 1
+      if kill -0 "$AGG_PID" 2>/dev/null; then
+        kill -9 "$AGG_PID" 2>/dev/null || true
+      fi
+    fi
+    rm -f "$AGG_PID_FILE" 2>/dev/null || true
+  fi
+
+  local agg_pids
+  agg_pids="$(pgrep -f 'cluster-aggregator.js' 2>/dev/null || true)"
+  if [ -n "$agg_pids" ]; then
+    echo "[stop] Stopping stray cluster-aggregator processes..."
+    for pid in $agg_pids; do
+      kill "$pid" 2>/dev/null || true
+    done
+  fi
+}
+
 # Check if systemd service exists and is running
 if [ -f "/etc/systemd/system/$SERVICE_NAME" ]; then
   if systemctl is-active --quiet "$SERVICE_NAME"; then
@@ -40,6 +66,7 @@ if [ -f "/etc/systemd/system/$SERVICE_NAME" ]; then
       if ! systemctl is-active --quiet "$SERVICE_NAME"; then
         echo "[stop] znode stopped."
         stop_p2p_daemon
+        stop_cluster_aggregator
         rm -f "$PID_FILE" 2>/dev/null || true
         exit 0
       fi
@@ -49,12 +76,14 @@ if [ -f "/etc/systemd/system/$SERVICE_NAME" ]; then
     echo "[stop] Service did not stop in 30s, forcing..."
     systemctl kill "$SERVICE_NAME" 2>/dev/null || true
     stop_p2p_daemon
+        stop_cluster_aggregator
     rm -f "$PID_FILE" 2>/dev/null || true
     echo "[stop] znode forcibly stopped."
     exit 0
   else
     echo "[stop] znode is not running (systemd service inactive)."
     stop_p2p_daemon
+        stop_cluster_aggregator
     rm -f "$PID_FILE" 2>/dev/null || true
     exit 0
   fi
@@ -66,6 +95,7 @@ echo "[stop] No systemd service found, using legacy shutdown..."
 if [ ! -f "$PID_FILE" ]; then
   echo "[stop] No pidfile found ($PID_FILE). Is znode running?"
   stop_p2p_daemon
+        stop_cluster_aggregator
   exit 0
 fi
 
@@ -74,6 +104,7 @@ if [ -z "$PID" ]; then
   echo "[stop] Empty pidfile, removing."
   rm -f "$PID_FILE"
   stop_p2p_daemon
+        stop_cluster_aggregator
   exit 0
 fi
 
@@ -81,6 +112,7 @@ if ! kill -0 "$PID" 2>/dev/null; then
   echo "[stop] No process with PID $PID, removing stale pidfile."
   rm -f "$PID_FILE"
   stop_p2p_daemon
+        stop_cluster_aggregator
   exit 0
 fi
 
@@ -93,6 +125,7 @@ for i in $(seq 1 30); do
     echo "[stop] znode stopped."
     rm -f "$PID_FILE"
     stop_p2p_daemon
+        stop_cluster_aggregator
     exit 0
   fi
   sleep 1
@@ -102,4 +135,5 @@ echo "[stop] Process did not exit after 30s, sending SIGKILL."
 kill -9 "$PID" 2>/dev/null || true
 rm -f "$PID_FILE"
 stop_p2p_daemon
+        stop_cluster_aggregator
 echo "[stop] znode forcibly stopped."

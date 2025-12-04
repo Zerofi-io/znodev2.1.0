@@ -1,9 +1,77 @@
 import http from 'http';
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
 
-const NODE_BASES = (process.env.ZNODE_API_BASES || '')
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const dotenvResult = dotenv.config({ path: __dirname + '/.env' });
+if (dotenvResult.error) {
+  console.warn('[ClusterAgg] Warning: failed to load .env file:', dotenvResult.error.message);
+  console.warn('[ClusterAgg] Proceeding with existing environment variables.');
+}
+
+function deriveNodeBasesFromEnv() {
+  const bases = [];
+
+  const bridgePortRaw = process.env.BRIDGE_API_PORT;
+  const bridgePortParsed = bridgePortRaw != null ? Number(bridgePortRaw) : NaN;
+  const bridgePort =
+    Number.isFinite(bridgePortParsed) && bridgePortParsed > 0 ? bridgePortParsed : 3002;
+
+  const publicIp = (process.env.PUBLIC_IP || '').trim();
+  if (publicIp) {
+    bases.push(`http://${publicIp}:${bridgePort}`);
+  }
+
+  const peersRaw = process.env.P2P_BOOTSTRAP_PEERS || '';
+  if (peersRaw) {
+    const tokens = peersRaw
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+
+    for (const token of tokens) {
+      let host = null;
+
+      const ip4Match = token.match(/\/ip4\/([^/]+)/);
+      if (ip4Match && ip4Match[1]) {
+        host = ip4Match[1];
+      }
+
+      if (!host) {
+        const dns4Match = token.match(/\/dns4\/([^/]+)/);
+        if (dns4Match && dns4Match[1]) {
+          host = dns4Match[1];
+        }
+      }
+
+      if (!host) {
+        const cleaned = token.replace(/^[a-zA-Z]+:\/\//, '');
+        const firstSlash = cleaned.indexOf('/');
+        const withoutPath = firstSlash >= 0 ? cleaned.slice(0, firstSlash) : cleaned;
+        const parts = withoutPath.split(':');
+        if (parts[0]) {
+          host = parts[0];
+        }
+      }
+
+      if (host && (!publicIp || host !== publicIp)) {
+        bases.push(`http://${host}:${bridgePort}`);
+      }
+    }
+  }
+
+  return Array.from(new Set(bases));
+}
+
+const ENV_NODE_BASES = (process.env.ZNODE_API_BASES || '')
   .split(',')
   .map((s) => s.trim())
   .filter((s) => s.length > 0);
+
+let NODE_BASES = ENV_NODE_BASES.length ? ENV_NODE_BASES : deriveNodeBasesFromEnv();
 
 const PORT_RAW = process.env.CLUSTER_AGG_PORT;
 const PORT_PARSED = PORT_RAW != null ? Number(PORT_RAW) : NaN;
@@ -23,7 +91,7 @@ const MIN_ELIGIBLE_NODES =
 
 if (!NODE_BASES.length) {
   console.error(
-    '[ClusterAgg] No nodes configured. Set ZNODE_API_BASES to a comma-separated list of node API base URLs.',
+    '[ClusterAgg] No nodes configured. Set ZNODE_API_BASES to a comma-separated list of node API base URLs, or ensure PUBLIC_IP / P2P_BOOTSTRAP_PEERS / BRIDGE_API_PORT are configured.',
   );
 }
 
@@ -203,6 +271,101 @@ const server = http.createServer(async (req, res) => {
     }
 
     const u = new URL(url, 'http://localhost');
+
+    // Proxy POST /bridge/deposit/request to a healthy node
+    if (u.pathname === '/bridge/deposit/request' && method === 'POST') {
+      if (!NODE_BASES.length) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No nodes configured' }));
+        return;
+      }
+
+      const body = await new Promise((resolve, reject) => {
+        let raw = '';
+        req.on('data', (chunk) => { raw += chunk; });
+        req.on('end', () => {
+          try { resolve(raw ? JSON.parse(raw) : {}); } catch (e) { resolve({}); }
+        });
+        req.on('error', reject);
+      });
+
+      let lastError = null;
+      for (const base of NODE_BASES) {
+        const target = base.replace(/\/$/, '') + '/bridge/deposit/request';
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), NODE_TIMEOUT_MS);
+          const resp = await fetch(target, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
+          clearTimeout(timeout);
+          if (!resp.ok) {
+            lastError = new Error(`HTTP ${resp.status}`);
+            continue;
+          }
+          const data = await resp.json().catch(() => ({}));
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(data));
+          return;
+        } catch (e) {
+          lastError = e;
+        }
+      }
+
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          error: 'Deposit routing unavailable',
+          message: lastError ? lastError.message || String(lastError) : 'no nodes responded',
+        }),
+      );
+      return;
+    }
+
+    // Proxy GET /bridge/signatures to a healthy node
+    if (u.pathname === '/bridge/signatures' && method === 'GET') {
+      if (!NODE_BASES.length) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No nodes configured' }));
+        return;
+      }
+
+      let lastError = null;
+      for (const base of NODE_BASES) {
+        const target = base.replace(/\/$/, '') + '/bridge/signatures';
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), NODE_TIMEOUT_MS);
+          const resp = await fetch(target, { method: 'GET', signal: controller.signal });
+          clearTimeout(timeout);
+          if (!resp.ok) {
+            lastError = new Error(`HTTP ${resp.status}`);
+            continue;
+          }
+          const data = await resp.json().catch(() => ({}));
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(data));
+          return;
+        } catch (e) {
+          lastError = e;
+        }
+      }
+
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          error: 'Signature routing unavailable',
+          message: lastError ? lastError.message || String(lastError) : 'no nodes responded',
+        }),
+      );
+      return;
+    }
+
+    const u2 = u;
+    const method2 = method;
 
     if (method === 'GET' && u.pathname === '/clusters') {
       const data = await aggregateClusters();

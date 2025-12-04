@@ -6,6 +6,8 @@ cd "$SCRIPT_DIR"
 
 LOG_FILE="$SCRIPT_DIR/znode.log"
 PID_FILE="$SCRIPT_DIR/znode.pid"
+AGG_LOG_FILE="$SCRIPT_DIR/cluster-aggregator.log"
+AGG_PID_FILE="$SCRIPT_DIR/cluster-aggregator.pid"
 SERVICE_NAME="znode.service"
 
 # Check if systemd service exists
@@ -78,6 +80,36 @@ echo "[start] No systemd service found, using legacy startup..."
 # ─────────────────────────────────────────────────────────────────────────────
 # Legacy startup code (for non-systemd or manual runs)
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+start_cluster_aggregator() {
+  echo "[start] Starting cluster-aggregator on port ${CLUSTER_AGG_PORT:-4000}..."
+
+  if [ -f "$AGG_PID_FILE" ]; then
+    local OLD_AGG_PID
+    OLD_AGG_PID="$(cat "$AGG_PID_FILE" 2>/dev/null || true)"
+    if [ -n "$OLD_AGG_PID" ] && kill -0 "$OLD_AGG_PID" 2>/dev/null; then
+      echo "[start] cluster-aggregator already running (PID $OLD_AGG_PID), skipping."
+      return 0
+    fi
+    rm -f "$AGG_PID_FILE" 2>/dev/null || true
+  fi
+
+  # Disable -e for the background start so failures don't kill the script
+  set +e
+  nohup node cluster-aggregator.js >> "$AGG_LOG_FILE" 2>&1 &
+  local AGG_PID=$!
+  local RC=$?
+  set -e
+
+  if [ "$RC" -ne 0 ]; then
+    echo "[start] WARNING: failed to start cluster-aggregator (exit $RC). Check $AGG_LOG_FILE"
+    return 0
+  fi
+
+  echo "$AGG_PID" > "$AGG_PID_FILE"
+  echo "[start] cluster-aggregator started (PID $AGG_PID)"
+}
 
 # Ensure deps
 if [ -f package-lock.json ]; then
@@ -155,6 +187,7 @@ sleep 2
 if kill -0 "$NODE_PID" 2>/dev/null; then
   echo "[start] znode started (PID $NODE_PID)"
   echo "[start] View logs: tail -f $LOG_FILE"
+  start_cluster_aggregator || true
 else
   echo "[start] Failed to start znode. Check $LOG_FILE for errors."
   rm -f "$PID_FILE"
