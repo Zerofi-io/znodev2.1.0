@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"encoding/hex"
 	"fmt"
-	"math/big"
 	"log"
+	"math/big"
 	"os"
 	"sort"
 	"strconv"
@@ -60,21 +60,21 @@ type PBFTMessage struct {
 
 // PBFTConsensusState tracks the state of a single consensus round
 type PBFTConsensusState struct {
-	ClusterID   string
-	Phase       string
-	ViewNumber  int
-	Digest      string
+	ClusterID          string
+	Phase              string
+	ViewNumber         int
+	Digest             string
 	PrePrepareReceived bool
-	Prepares    map[string]*PBFTMessage // address -> PREPARE message
-	Commits     map[string]*PBFTMessage // address -> COMMIT message
-	ViewChanges map[string]int          // address -> requested view number
-	Members     []string                // canonical ordered members (lowercase)
-	Coordinator string                  // current coordinator address
-	StartTime   time.Time
-	Completed   bool
-	Aborted     bool
-	AbortReason string
-	mu          sync.RWMutex
+	Prepares           map[string]*PBFTMessage // address -> PREPARE message
+	Commits            map[string]*PBFTMessage // address -> COMMIT message
+	ViewChanges        map[string]int          // address -> requested view number
+	Members            []string                // canonical ordered members (lowercase)
+	Coordinator        string                  // current coordinator address
+	StartTime          time.Time
+	Completed          bool
+	Aborted            bool
+	AbortReason        string
+	mu                 sync.RWMutex
 }
 
 // ConsensusResult is returned when consensus completes or fails
@@ -91,10 +91,10 @@ type ConsensusResult struct {
 
 // PBFTManager handles PBFT consensus for a host
 type PBFTManager struct {
-	host           *Host
-	consensus      map[string]*PBFTConsensusState // clusterID:phase -> state
-	pendingMsgs    map[string][]*PBFTMessage      // clusterID:phase -> buffered messages
-	mu             sync.RWMutex
+	host        *Host
+	consensus   map[string]*PBFTConsensusState // clusterID:phase -> state
+	pendingMsgs map[string][]*PBFTMessage      // clusterID:phase -> buffered messages
+	mu          sync.RWMutex
 }
 
 // NewPBFTManager creates a new PBFT manager
@@ -830,6 +830,7 @@ func (pm *PBFTManager) RunConsensus(clusterID, phase, data string, members []str
 			commitCount := len(cs.Commits)
 			memberCount := len(cs.Members)
 			cs.mu.RUnlock()
+			quorum := pbftQuorum(memberCount)
 
 			if completed {
 				// Collect participants
@@ -865,8 +866,8 @@ func (pm *PBFTManager) RunConsensus(clusterID, phase, data string, members []str
 
 			// Check timeouts
 			now := time.Now()
-			if now.After(prepareDeadline) && prepareCount < memberCount {
-				// PREPARE timeout - not all 11 nodes prepared
+			if now.After(prepareDeadline) && prepareCount < quorum {
+				// PREPARE timeout - quorum not reached
 				cs.mu.RLock()
 				missing := pm.getMissingMembers(cs, cs.Prepares)
 				cs.mu.RUnlock()
@@ -879,13 +880,13 @@ func (pm *PBFTManager) RunConsensus(clusterID, phase, data string, members []str
 					Success:     false,
 					Phase:       phase,
 					Aborted:     true,
-					AbortReason: "prepare timeout - not all nodes prepared",
+					AbortReason: "prepare timeout - quorum not reached",
 					Missing:     missing,
 				}, fmt.Errorf("prepare timeout: missing %d nodes", len(missing))
 			}
 
-			if now.After(commitDeadline) && commitCount < memberCount {
-				// COMMIT timeout - not all 11 nodes committed
+			if now.After(commitDeadline) && commitCount < quorum {
+				// COMMIT timeout - quorum not reached
 				cs.mu.RLock()
 				missing := pm.getMissingMembers(cs, cs.Commits)
 				cs.mu.RUnlock()
@@ -898,7 +899,7 @@ func (pm *PBFTManager) RunConsensus(clusterID, phase, data string, members []str
 					Success:     false,
 					Phase:       phase,
 					Aborted:     true,
-					AbortReason: "commit timeout - not all nodes committed",
+					AbortReason: "commit timeout - quorum not reached",
 					Missing:     missing,
 				}, fmt.Errorf("commit timeout: missing %d nodes", len(missing))
 			}
@@ -940,23 +941,22 @@ func (pm *PBFTManager) AbortConsensus(clusterID, phase, reason string) {
 	log.Printf("[PBFT] Consensus aborted for %s phase=%s: %s", clusterID[:8], phase, reason)
 }
 
-
 // PBFTConsensusDebugState is a snapshot of a consensus state for debugging/testing.
 type PBFTConsensusDebugState struct {
-	ClusterID          string            `json:"clusterId"`
-	Phase              string            `json:"phase"`
-	ViewNumber         int               `json:"viewNumber"`
-	Digest             string            `json:"digest"`
-	PrePrepareReceived bool              `json:"prePrepareReceived"`
-	Members            []string          `json:"members"`
-	Coordinator        string            `json:"coordinator"`
-	StartTime          time.Time         `json:"startTime"`
-	Completed          bool              `json:"completed"`
-	Aborted            bool              `json:"aborted"`
-	AbortReason        string            `json:"abortReason"`
-	PrepareSenders     []string          `json:"prepareSenders"`
-	CommitSenders      []string          `json:"commitSenders"`
-	ViewChanges        map[string]int    `json:"viewChanges"`
+	ClusterID          string         `json:"clusterId"`
+	Phase              string         `json:"phase"`
+	ViewNumber         int            `json:"viewNumber"`
+	Digest             string         `json:"digest"`
+	PrePrepareReceived bool           `json:"prePrepareReceived"`
+	Members            []string       `json:"members"`
+	Coordinator        string         `json:"coordinator"`
+	StartTime          time.Time      `json:"startTime"`
+	Completed          bool           `json:"completed"`
+	Aborted            bool           `json:"aborted"`
+	AbortReason        string         `json:"abortReason"`
+	PrepareSenders     []string       `json:"prepareSenders"`
+	CommitSenders      []string       `json:"commitSenders"`
+	ViewChanges        map[string]int `json:"viewChanges"`
 }
 
 // GetConsensusDebugState returns a snapshot of the consensus state for a cluster/phase.
