@@ -158,6 +158,51 @@ async function handleAPIRequest(node, req, res, pathname, params, rateLimitWindo
     if (pathname === '/bridge/info' && req.method === 'GET') {
       return jsonResponse(res, 200, { multisigAddress: node._clusterFinalAddress || null, clusterMembers: node._clusterMembers ? node._clusterMembers.length : 0, clusterFinalized: node._clusterFinalized, bridgeContract: node.bridge ? node.bridge.target || node.bridge.address : null, clusterId: node._activeClusterId || null, minConfirmations: Number(process.env.MIN_DEPOSIT_CONFIRMATIONS || 10) });
     }
+    if (pathname === '/bridge/reserves' && req.method === 'GET') {
+      const moneroHealth = node.moneroHealth || MoneroHealth.HEALTHY;
+      if (!node.monero || moneroHealth === MoneroHealth.QUARANTINED) {
+        return jsonResponse(res, 503, { error: 'Monero backend not healthy', moneroHealth });
+      }
+      const clusterId = node._activeClusterId || null;
+      const multisigAddress = node._clusterFinalAddress || null;
+      let walletAddress = null;
+      try {
+        walletAddress = await node.monero.getAddress();
+      } catch (_ignored) {}
+      try {
+        try { await node.monero.refresh(); } catch (_ignored) {}
+        const bal = await node.monero.getBalance();
+        const balanceRaw = bal && bal.balance != null ? bal.balance : 0;
+        const unlockedRaw = bal && bal.unlockedBalance != null ? bal.unlockedBalance : 0;
+        const balanceAtomic = typeof balanceRaw === 'bigint' ? balanceRaw : BigInt(String(balanceRaw));
+        const unlockedAtomic = typeof unlockedRaw === 'bigint' ? unlockedRaw : BigInt(String(unlockedRaw));
+        const denom = 1000000000000n;
+        const toDecimal = (v) => {
+          const sign = v < 0n ? '-' : '';
+          const abs = v < 0n ? -v : v;
+          const intPart = abs / denom;
+          const fracPart = abs % denom;
+          if (fracPart === 0n) return sign + intPart.toString() + '.0';
+          let fracStr = fracPart.toString().padStart(12, '0');
+          fracStr = fracStr.replace(/0+$/, '');
+          return sign + intPart.toString() + '.' + fracStr;
+        };
+        const addressVerified = !!(walletAddress && multisigAddress && walletAddress === multisigAddress);
+        return jsonResponse(res, 200, {
+          clusterId,
+          multisigAddress,
+          walletAddress,
+          addressVerified,
+          balanceAtomic: balanceAtomic.toString(),
+          unlockedBalanceAtomic: unlockedAtomic.toString(),
+          balance: toDecimal(balanceAtomic),
+          unlockedBalance: toDecimal(unlockedAtomic),
+          checkedAt: Date.now(),
+        });
+      } catch (e) {
+        return jsonResponse(res, 503, { error: 'Failed to query Monero balance', message: e.message || String(e) });
+      }
+    }
     if (pathname === '/bridge/cluster/members' && req.method === 'GET') {
       const members = node._clusterMembers || [];
       return jsonResponse(res, 200, { members });
@@ -249,6 +294,113 @@ async function handleAPIRequest(node, req, res, pathname, params, rateLimitWindo
         signatures = filtered;
       }
       return jsonResponse(res, 200, { signatures });
+    }
+    if (pathname === '/bridge/txs' && req.method === 'GET') {
+      if (!node.bridge || !node.provider) {
+        return jsonResponse(res, 503, { error: 'Bridge contract or provider not configured' });
+      }
+      const limitParam = params && typeof params.get === 'function' ? params.get('limit') : null;
+      const envLimitRaw = process.env.BRIDGE_TX_FEED_LIMIT;
+      const limitRaw = limitParam != null && limitParam !== '' ? limitParam : envLimitRaw;
+      const limitParsed = limitRaw != null ? Number(limitRaw) : NaN;
+      const limit = Number.isFinite(limitParsed) && limitParsed > 0 ? Math.floor(limitParsed) : 10;
+      const blocksParam = params && typeof params.get === 'function' ? params.get('blocks') : null;
+      const envLookbackRaw = process.env.BRIDGE_TX_FEED_BLOCKS;
+      const lookbackRaw = blocksParam != null && blocksParam !== '' ? blocksParam : envLookbackRaw;
+      const lookbackParsed = lookbackRaw != null ? Number(lookbackRaw) : NaN;
+      const lookback = Number.isFinite(lookbackParsed) && lookbackParsed > 0 ? lookbackParsed : 20000;
+      try {
+        const currentBlock = await node.provider.getBlockNumber();
+        const fromBlock = Math.max(0, currentBlock - lookback);
+        const clusterIdFilter = node._activeClusterId || null;
+        const txs = [];
+        try {
+          const mintFilter = clusterIdFilter
+            ? node.bridge.filters.TokensMinted(null, clusterIdFilter)
+            : node.bridge.filters.TokensMinted();
+          const events = await node.bridge.queryFilter(mintFilter, fromBlock, currentBlock);
+          for (const ev of events) {
+            const args = ev.args || [];
+            const user = args[0] ?? args.user ?? null;
+            const clusterId = args[1] ?? args.clusterId ?? null;
+            const userAmount = args[3] ?? args.userAmount ?? args.amount ?? null;
+            const fee = args[4] ?? args.fee ?? null;
+            txs.push({
+              type: 'MINT',
+              direction: 'XMR->zXMR',
+              txHash: ev.transactionHash,
+              blockNumber: ev.blockNumber,
+              logIndex: ev.logIndex,
+              user,
+              clusterId,
+              amount: userAmount ? userAmount.toString() : '0',
+              fee: fee ? fee.toString() : '0',
+            });
+          }
+        } catch (e) {
+          console.log('[BridgeAPI] Failed to query TokensMinted events:', e.message || String(e));
+        }
+        try {
+          const burnFilter = clusterIdFilter
+            ? node.bridge.filters.TokensBurned(null, clusterIdFilter)
+            : node.bridge.filters.TokensBurned();
+          const events = await node.bridge.queryFilter(burnFilter, fromBlock, currentBlock);
+          for (const ev of events) {
+            const args = ev.args || [];
+            const user = args[0] ?? args.user ?? null;
+            const clusterId = args[1] ?? args.clusterId ?? null;
+            const xmrAddress = args[2] ?? args.xmrAddress ?? null;
+            const burnAmount = args[3] ?? args.burnAmount ?? args.amount ?? null;
+            const fee = args[4] ?? args.fee ?? null;
+            txs.push({
+              type: 'BURN',
+              direction: 'zXMR->XMR',
+              txHash: ev.transactionHash,
+              blockNumber: ev.blockNumber,
+              logIndex: ev.logIndex,
+              user,
+              clusterId,
+              xmrAddress,
+              amount: burnAmount ? burnAmount.toString() : '0',
+              fee: fee ? fee.toString() : '0',
+            });
+          }
+        } catch (e) {
+          console.log('[BridgeAPI] Failed to query TokensBurned events:', e.message || String(e));
+        }
+        const uniqueBlocks = Array.from(
+          new Set(
+            txs
+              .map((t) => (typeof t.blockNumber === 'number' ? t.blockNumber : null))
+              .filter((n) => n != null),
+          ),
+        );
+        const blockTimestamps = {};
+        for (const bn of uniqueBlocks) {
+          try {
+            const block = await node.provider.getBlock(bn);
+            if (block && typeof block.timestamp === 'number') {
+              blockTimestamps[bn] = block.timestamp;
+            }
+          } catch (e) {
+            console.log('[BridgeAPI] Failed to fetch block for tx feed:', e.message || String(e));
+          }
+        }
+        for (const tx of txs) {
+          if (tx.blockNumber != null && Object.prototype.hasOwnProperty.call(blockTimestamps, tx.blockNumber)) {
+            tx.timestamp = blockTimestamps[tx.blockNumber];
+          }
+        }
+        txs.sort((a, b) => {
+          if (a.blockNumber !== b.blockNumber) return b.blockNumber - a.blockNumber;
+          if (a.logIndex != null && b.logIndex != null) return b.logIndex - a.logIndex;
+          return 0;
+        });
+        return jsonResponse(res, 200, { transactions: txs.slice(0, limit) });
+      } catch (e) {
+        console.log('[BridgeAPI] Failed to build tx feed:', e.message || String(e));
+        return jsonResponse(res, 503, { error: 'Failed to load bridge transactions' });
+      }
     }
     if (pathname.startsWith('/bridge/withdrawal/status/') && req.method === 'GET') {
       const txHash = pathname.split('/').pop();

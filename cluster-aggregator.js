@@ -67,6 +67,50 @@ function isNodeEligible(status) {
   );
 }
 
+
+async function fetchClusterReserve(baseUrl) {
+  const url = `${baseUrl.replace(/\/$/, '')}/bridge/reserves`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), NODE_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: controller.signal, cache: 'no-store' });
+    if (!res.ok) {
+      return { ok: false, error: `HTTP ${res.status}`, baseUrl };
+    }
+    const data = await res.json();
+    return { ok: true, data, baseUrl };
+  } catch (e) {
+    const msg = e && e.message ? e.message : String(e);
+    return { ok: false, error: msg, baseUrl };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchNodeTxs(baseUrl, limit) {
+  const base = baseUrl.replace(/\/$/, '');
+  let url = baseUrl.replace(/\/$/, '') + '/bridge/txs';
+  const n = Number(limit);
+  if (Number.isFinite(n) && n > 0) {
+    url += '?limit=' + Math.floor(n);
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), NODE_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: controller.signal, cache: 'no-store' });
+    if (!res.ok) {
+      return { ok: false, error: `HTTP ${res.status}`, baseUrl };
+    }
+    const data = await res.json();
+    return { ok: true, data, baseUrl };
+  } catch (e) {
+    const msg = e && e.message ? e.message : String(e);
+    return { ok: false, error: msg, baseUrl };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function aggregateClusters() {
   const timestamp = Date.now();
 
@@ -179,6 +223,138 @@ const server = http.createServer(async (req, res) => {
             eligibleNodes: c.eligibleNodes,
             timestamp: data.timestamp,
           })),
+        }),
+      );
+      return;
+    }
+
+    if (method === 'GET' && u.pathname === '/api/reserves/xmr') {
+      const data = await aggregateClusters();
+      const clusters = [];
+      let totalAtomic = 0n;
+      for (const c of data.clusters) {
+        const nodes = Array.isArray(c.nodes) ? c.nodes : [];
+        const primary = nodes.find((n) => n.eligibleForBridging) || nodes[0];
+        if (!primary || !primary.apiBase) {
+          clusters.push({
+            id: c.id,
+            multisigAddress: c.finalAddress || null,
+            nodeApiBase: null,
+            error: 'no_node',
+          });
+          continue;
+        }
+        const r = await fetchClusterReserve(primary.apiBase);
+        if (!r.ok) {
+          clusters.push({
+            id: c.id,
+            multisigAddress: c.finalAddress || null,
+            nodeApiBase: primary.apiBase,
+            error: r.error || 'reserve_error',
+          });
+          continue;
+        }
+        const d = r.data || {};
+        const balRaw = d.balanceAtomic != null ? d.balanceAtomic : d.unlockedBalanceAtomic;
+        let balAtomic = 0n;
+        try {
+          if (balRaw != null) balAtomic = BigInt(String(balRaw));
+        } catch (_ignored) {}
+        totalAtomic += balAtomic;
+        clusters.push({
+          id: c.id,
+          multisigAddress: d.multisigAddress || c.finalAddress || null,
+          nodeApiBase: primary.apiBase,
+          addressVerified: !!d.addressVerified,
+          balanceAtomic: balAtomic.toString(),
+          balance: d.balance || null,
+          unlockedBalanceAtomic: d.unlockedBalanceAtomic != null ? String(d.unlockedBalanceAtomic) : null,
+          unlockedBalance: d.unlockedBalance || null,
+          checkedAt: d.checkedAt || data.timestamp,
+        });
+      }
+      const denom = 1000000000000n;
+      const toDecimal = (v) => {
+        const sign = v < 0n ? '-' : '';
+        const abs = v < 0n ? -v : v;
+        const intPart = abs / denom;
+        const fracPart = abs % denom;
+        if (fracPart === 0n) return sign + intPart.toString() + '.0';
+        let fracStr = fracPart.toString().padStart(12, '0');
+        fracStr = fracStr.replace(/0+$/, '');
+        return sign + intPart.toString() + '.' + fracStr;
+      };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          timestamp: data.timestamp,
+          totalClusters: clusters.length,
+          clusters,
+          totalAtomic: totalAtomic.toString(),
+          total: toDecimal(totalAtomic),
+          errors: data.errors || [],
+        }),
+      );
+      return;
+    }
+
+    if (method === 'GET' && u.pathname === '/api/txs') {
+      const limitParam = u.searchParams.get('limit');
+      const envLimitRaw = process.env.CLUSTER_AGG_TX_LIMIT;
+      const limitRaw = limitParam != null && limitParam !== '' ? limitParam : envLimitRaw;
+      const limitParsed = limitRaw != null ? Number(limitRaw) : NaN;
+      const limit =
+        Number.isFinite(limitParsed) && limitParsed > 0 ? Math.floor(limitParsed) : 20;
+      const perNodeLimit = Math.max(limit * 2, 20);
+
+      const errors = [];
+      const txMap = new Map();
+
+      const results = await Promise.allSettled(
+        NODE_BASES.map((base) => fetchNodeTxs(base, perNodeLimit)),
+      );
+
+      for (const r of results) {
+        if (r.status !== 'fulfilled') {
+          errors.push('Request failed');
+          continue;
+        }
+        const { ok, data, error, baseUrl } = r.value;
+        if (!ok) {
+          errors.push(`[${baseUrl}] ${error}`);
+          continue;
+        }
+        const list = Array.isArray(data.transactions) ? data.transactions : [];
+        for (const tx of list) {
+          const key = String(tx.txHash || '') + ':' + String(tx.type || '');
+          if (!key.trim()) continue;
+          const existing = txMap.get(key);
+          if (!existing || (tx.blockNumber ?? 0) > (existing.blockNumber ?? 0)) {
+            txMap.set(key, { ...tx, nodeApiBase: baseUrl });
+          }
+        }
+      }
+
+      const all = Array.from(txMap.values());
+      all.sort((a, b) => {
+        const ta = typeof a.timestamp === 'number' ? a.timestamp : 0;
+        const tb = typeof b.timestamp === 'number' ? b.timestamp : 0;
+        if (ta !== tb) return tb - ta;
+        if ((a.blockNumber || 0) !== (b.blockNumber || 0)) {
+          return (b.blockNumber || 0) - (a.blockNumber || 0);
+        }
+        if (a.logIndex != null && b.logIndex != null) return b.logIndex - a.logIndex;
+        return 0;
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          timestamp: Date.now(),
+          totalNodes: NODE_BASES.length,
+          totalTransactions: all.length,
+          transactions: all.slice(0, limit),
+          errors,
         }),
       );
       return;
