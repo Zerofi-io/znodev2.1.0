@@ -376,15 +376,17 @@ create_systemd_service() {
   fi
 
   local SERVICE_FILE="/etc/systemd/system/znode.service"
+  local AGG_SERVICE_FILE="/etc/systemd/system/cluster-aggregator.service"
   local NODE_DIR="$SCRIPT_DIR/.."
   NODE_DIR="$(cd "$NODE_DIR" && pwd)"
 
-  echo "Creating systemd service file..."
+  echo "Creating systemd service files..."
 
   cat > "$SERVICE_FILE" << SERVICEOF
 [Unit]
 Description=ZeroFi Node v2.1.0
 After=network.target
+Wants=cluster-aggregator.service
 
 [Service]
 Type=simple
@@ -402,10 +404,31 @@ StandardError=append:$NODE_DIR/znode.log
 WantedBy=multi-user.target
 SERVICEOF
 
+  cat > "$AGG_SERVICE_FILE" << SERVICEOF2
+[Unit]
+Description=ZeroFi Cluster Aggregator
+After=network.target znode.service
+PartOf=znode.service
+
+[Service]
+Type=simple
+WorkingDirectory=$NODE_DIR
+EnvironmentFile=$NODE_DIR/.env
+ExecStart=/usr/bin/node $NODE_DIR/cluster-aggregator.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:$NODE_DIR/cluster-aggregator.log
+StandardError=append:$NODE_DIR/cluster-aggregator.log
+
+[Install]
+WantedBy=multi-user.target
+SERVICEOF2
+
   systemctl daemon-reload
   systemctl enable znode.service 2>/dev/null || true
+  systemctl enable cluster-aggregator.service 2>/dev/null || true
 
-  echo " Systemd service created and enabled: znode.service"
+  echo " Systemd services created and enabled: znode.service, cluster-aggregator.service"
   echo "   Start with: ./start"
   echo "   Stop with:  ./stop"
   echo "   Logs:       journalctl -u znode -f  OR  tail -f znode.log"
