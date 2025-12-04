@@ -207,6 +207,14 @@ async function aggregateClusters() {
       continue;
     }
 
+    const members = Array.isArray(cluster.members) ? cluster.members : [];
+    let liveMembers = 0;
+    for (const m of members) {
+      if (!m) continue;
+      const s = (m.status || '').toLowerCase();
+      if (s === 'healthy' || s === 'online') liveMembers += 1;
+    }
+
     let entry = clusters.get(clusterId);
     if (!entry) {
       entry = {
@@ -215,6 +223,7 @@ async function aggregateClusters() {
         size: typeof cluster.size === 'number' ? cluster.size : null,
         eligibleNodes: 0,
         totalNodes: 0,
+        liveMembers: 0,
         nodes: [],
       };
       clusters.set(clusterId, entry);
@@ -223,6 +232,9 @@ async function aggregateClusters() {
     entry.totalNodes += 1;
     if (eligible) {
       entry.eligibleNodes += 1;
+    }
+    if (liveMembers > 0 && (typeof entry.liveMembers !== 'number' || liveMembers > entry.liveMembers)) {
+      entry.liveMembers = liveMembers;
     }
 
     const p2p = data.p2p || {};
@@ -238,13 +250,20 @@ async function aggregateClusters() {
     });
   }
 
-  const filtered = Array.from(clusters.values()).filter(
+  const allClusters = Array.from(clusters.values());
+  const filtered = allClusters.filter(
     (c) => c.eligibleNodes > 0 && !!c.finalAddress,
   );
+
+  let liveNodes = 0;
+  for (const c of allClusters) {
+    if (typeof c.liveMembers === 'number') liveNodes += c.liveMembers;
+  }
 
   return {
     timestamp,
     totalNodes: NODE_BASES.length,
+    liveNodes,
     totalClusters: filtered.length,
     minEligibleNodes: MIN_ELIGIBLE_NODES,
     clusters: filtered,
