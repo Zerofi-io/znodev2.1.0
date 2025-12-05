@@ -95,26 +95,6 @@ export async function startWithdrawalMonitor(node) {
     });
     console.log('[Withdrawal] Now listening for TokensBurned events');
     setupWithdrawalClaimListener(node);
-    
-    // Run startup multisig sync if needed
-    setTimeout(async () => {
-      try {
-        const bal = await node.monero.getBalance();
-        if (bal && bal.multisigImportNeeded) {
-          console.log('[MultisigSync] Startup: multisig_import_needed=true, initiating sync...');
-          const result = await runMultisigInfoSync(node);
-          if (result && result.success) {
-            console.log('[MultisigSync] Startup sync completed successfully');
-          } else {
-            console.log('[MultisigSync] Startup sync failed:', result && result.reason ? result.reason : 'unknown');
-          }
-        } else {
-          console.log('[MultisigSync] Startup: multisig wallet is in sync');
-        }
-      } catch (e) {
-        console.log('[MultisigSync] Startup sync error:', e.message || String(e));
-      }
-    }, 5000);
   } catch (e) {
     console.log('[Withdrawal] Failed to setup event listener:', e.message || String(e));
     node._withdrawalMonitorRunning = false;
@@ -333,6 +313,9 @@ async function runMultisigInfoSync(node) {
   }
   const clusterId = node._activeClusterId;
   const sessionId = node._sessionId || 'bridge';
+  const totalMembers = node._clusterMembers.length;
+  const minSigners = REQUIRED_WITHDRAWAL_SIGNATURES;
+  const windowMs = Number(process.env.MULTISIG_SYNC_WINDOW_MS || 10000);
 
   let localInfo;
   try {
@@ -341,6 +324,10 @@ async function runMultisigInfoSync(node) {
     console.log('[MultisigSync] export_multisig_info failed:', e.message || String(e));
     return { success: false, reason: 'export_failed' };
   }
+
+  const selfAddress = node.wallet && node.wallet.address ? node.wallet.address.toLowerCase() : null;
+  const responders = new Set();
+  if (selfAddress) responders.add(selfAddress);
 
   const payload = JSON.stringify({
     type: 'multisig-info',
@@ -355,42 +342,59 @@ async function runMultisigInfoSync(node) {
     console.log('[MultisigSync] Failed to broadcast multisig info:', e.message || String(e));
   }
 
-  let complete = false;
-  let peerPayloads = [];
-  try {
-    complete = await node.p2p.waitForRoundCompletion(
-      clusterId,
-      sessionId,
-      MULTISIG_SYNC_ROUND,
-      node._clusterMembers,
-      MULTISIG_SYNC_TIMEOUT_MS,
-    );
-    peerPayloads = await node.p2p.getPeerPayloads(
-      clusterId,
-      sessionId,
-      MULTISIG_SYNC_ROUND,
-      node._clusterMembers,
-    );
-  } catch (e) {
-    console.log('[MultisigSync] Error while waiting for multisig info round:', e.message || String(e));
-    return { success: false, reason: 'round_error' };
-  }
+  const seenInfosBySender = new Map();
+  const start = Date.now();
 
-  if (!peerPayloads || peerPayloads.length === 0) {
-    console.log('[MultisigSync] No multisig info payloads received');
-    return { success: false, reason: 'no_payloads' };
-  }
-
-  const infos = [];
-  for (const raw of peerPayloads) {
+  while (true) {
+    const elapsed = Date.now() - start;
     try {
-      const data = JSON.parse(raw);
-      if (data && typeof data.info === 'string' && data.info.length > 0) {
-        infos.push(data.info);
+      const peerPayloads = await node.p2p.getPeerPayloads(
+        clusterId,
+        sessionId,
+        MULTISIG_SYNC_ROUND,
+        node._clusterMembers,
+      );
+      if (peerPayloads && peerPayloads.length > 0) {
+        for (const raw of peerPayloads) {
+          try {
+            const data = JSON.parse(raw);
+            if (data && data.type === 'multisig-info' && typeof data.info === 'string' && data.info.length > 0) {
+              const sender = (data.sender || '').toLowerCase();
+              if (sender) {
+                responders.add(sender);
+                if (!seenInfosBySender.has(sender)) {
+                  seenInfosBySender.set(sender, data.info);
+                }
+              }
+            }
+          } catch (_ignored) {}
+        }
       }
-    } catch (_ignored) {}
+    } catch (e) {
+      console.log('[MultisigSync] Error while polling multisig info payloads:', e.message || String(e));
+    }
+
+    const responderCount = responders.size;
+    if (responderCount >= totalMembers) {
+      console.log(`[MultisigSync] All ${totalMembers}/${totalMembers} participants responded; finishing early`);
+      break;
+    }
+    if (elapsed >= windowMs) {
+      console.log(`[MultisigSync] Sync window expired after ${Math.round(elapsed / 1000)}s: responders=${responderCount}/${totalMembers}`);
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 
+  const responderCount = responders.size;
+  if (responderCount < minSigners) {
+    console.log(
+      `[MultisigSync] Not enough participants for multisig sync: responders=${responderCount}/${totalMembers}, required=${minSigners}`,
+    );
+    return { success: false, reason: 'not_enough_participants', importedOutputs: 0 };
+  }
+
+  const infos = Array.from(seenInfosBySender.values());
   if (infos.length === 0) {
     console.log('[MultisigSync] No valid multisig info entries parsed from peer payloads');
     return { success: false, reason: 'no_valid_infos' };
@@ -406,32 +410,6 @@ async function runMultisigInfoSync(node) {
     }
   }
 
-  const infoHashes = infos.map((info) => ethers.keccak256(ethers.toUtf8Bytes(info)));
-  infoHashes.sort();
-  const combinedHash = ethers.keccak256(ethers.toUtf8Bytes(infoHashes.join('')));
-
-  let consensusOk = false;
-  try {
-    const topic = `multisig-sync-${String(clusterId).slice(0, 10)}`;
-    const result = await node.p2p.runConsensus(
-      clusterId,
-      sessionId,
-      topic,
-      combinedHash,
-      node._clusterMembers,
-      MULTISIG_SYNC_TIMEOUT_MS,
-    );
-    consensusOk = !!(result && result.success);
-    if (!consensusOk) {
-      console.log(
-        '[MultisigSync] PBFT consensus failed for multisig sync:',
-        result && result.reason ? result.reason : 'unknown',
-      );
-    }
-  } catch (e) {
-    console.log('[MultisigSync] PBFT consensus error for multisig sync:', e.message || String(e));
-  }
-
   let finalBalance = null;
   try {
     finalBalance = await node.monero.getBalance();
@@ -444,14 +422,6 @@ async function runMultisigInfoSync(node) {
     return {
       success: false,
       reason: 'multisig_import_needed_still_true',
-      importedOutputs,
-    };
-  }
-
-  if (!consensusOk) {
-    return {
-      success: false,
-      reason: 'pbft_failed',
       importedOutputs,
     };
   }
