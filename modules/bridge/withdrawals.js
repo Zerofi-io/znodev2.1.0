@@ -134,6 +134,57 @@ function setupWithdrawalClaimListener(node) {
     if (node._withdrawalMonitorRunning) setTimeout(pollClaims, 5000);
   };
   pollClaims();
+  setupMultisigSyncResponder(node);
+}
+
+function setupMultisigSyncResponder(node) {
+  if (!node.p2p || node._multisigSyncResponderSetup) return;
+  node._multisigSyncResponderSetup = true;
+  node._lastMultisigSyncBroadcast = 0;
+
+  const pollMultisigSync = async () => {
+    if (!node._withdrawalMonitorRunning) return;
+    try {
+      const payloads = await node.p2p.getPeerPayloads(
+        node._activeClusterId,
+        node._sessionId || 'bridge',
+        MULTISIG_SYNC_ROUND,
+        node._clusterMembers,
+      );
+      if (payloads && payloads.length > 0) {
+        let hasOtherNodeRequest = false;
+        for (const raw of payloads) {
+          try {
+            const data = JSON.parse(raw);
+            if (data.type === 'multisig-info' && data.sender && data.sender.toLowerCase() !== node.wallet.address.toLowerCase()) {
+              hasOtherNodeRequest = true;
+              break;
+            }
+          } catch (_ignored) {}
+        }
+        const now = Date.now();
+        const alreadyBroadcast = node._lastMultisigSyncBroadcast && (now - node._lastMultisigSyncBroadcast) < 30000;
+        if (hasOtherNodeRequest && !alreadyBroadcast && node.monero) {
+          try {
+            const localInfo = await node.monero.exportMultisigInfo();
+            const payload = JSON.stringify({
+              type: 'multisig-info',
+              clusterId: node._activeClusterId,
+              info: localInfo,
+              sender: node.wallet.address,
+            });
+            await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', MULTISIG_SYNC_ROUND, payload);
+            node._lastMultisigSyncBroadcast = now;
+            console.log('[MultisigSync] Responded to multisig sync request from peer');
+          } catch (e) {
+            console.log('[MultisigSync] Failed to respond to sync request:', e.message || String(e));
+          }
+        }
+      }
+    } catch (_ignored) {}
+    if (node._withdrawalMonitorRunning) setTimeout(pollMultisigSync, 3000);
+  };
+  pollMultisigSync();
 }
 
 async function handleBurnEvent(node, event) {
