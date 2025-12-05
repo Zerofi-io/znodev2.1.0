@@ -420,7 +420,7 @@ export async function startDepositMonitor(node) {
   loadBridgeState(node);
   node._depositMonitorRunning = true;
   const pollIntervalMs = Number(process.env.DEPOSIT_POLL_INTERVAL_MS || 30000);
-  const minConfirmations = Number(process.env.MIN_DEPOSIT_CONFIRMATIONS || 10);
+  const minConfirmations = Number(process.env.MIN_DEPOSIT_CONFIRMATIONS || 2);
   console.log(`[Bridge] Starting deposit monitor (poll: ${pollIntervalMs / 1000}s, minConf: ${minConfirmations})`);
   const poll = async () => {
     if (!node._depositMonitorRunning || !node._clusterFinalized) return;

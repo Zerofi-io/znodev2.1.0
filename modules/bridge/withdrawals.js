@@ -63,7 +63,6 @@ const WITHDRAWAL_SIGN_STEP_TIMEOUT_MS = Number(process.env.WITHDRAWAL_SIGN_STEP_
 const WITHDRAWAL_MAX_RETRY_WINDOW_MS = Number(process.env.WITHDRAWAL_MAX_RETRY_WINDOW_MS || 600000);
 const WITHDRAWAL_RETRY_INTERVAL_MS = Number(process.env.WITHDRAWAL_RETRY_INTERVAL_MS || 30000);
 const WITHDRAWAL_UNSIGNED_INFO_ROUND = Number(process.env.WITHDRAWAL_UNSIGNED_INFO_ROUND || 9898);
-const WITHDRAWAL_UNSIGNED_INFO_TTL_MS = Number(process.env.WITHDRAWAL_UNSIGNED_INFO_TTL_MS || 86400000);
 
 const WITHDRAWAL_PROCESSED_STORE_PATH = path.join(__dirname, '.withdrawals-processed.json');
 let _processedWithdrawalsStore = null;
@@ -212,7 +211,6 @@ function setupWithdrawalClaimListener(node) {
   pollClaims();
   setupMultisigSyncResponder(node);
   setupWithdrawalSignStepListener(node);
-  setupWithdrawalUnsignedInfoListener(node);
 }
 
 function setupMultisigSyncResponder(node) {
@@ -619,74 +617,6 @@ function clearLocalSignStepCacheForWithdrawal(node, withdrawalTxHash) {
   }
 }
 
-async function broadcastUnsignedInfoIfNeeded(node, key) {
-  if (!node || !node.p2p || !node._pendingWithdrawals) return;
-  const pending = node._pendingWithdrawals.get(key);
-  if (!pending || !pending.pbftUnsignedHash || !pending.txDataHexUnsigned) return;
-  const clusterId = node._activeClusterId;
-  if (!clusterId) return;
-  const sessionId = node._sessionId || 'bridge';
-  const txHash = pending.txHash || key;
-  try {
-    const payload = JSON.stringify({
-      type: 'withdrawal-unsigned-info',
-      txHash,
-      pbftUnsignedHash: pending.pbftUnsignedHash,
-      signerSet: Array.isArray(pending.signerSet) ? pending.signerSet : null,
-      txDataHexHash: ethers.keccak256(ethers.toUtf8Bytes(pending.txDataHexUnsigned)),
-    });
-    await node.p2p.broadcastRoundData(clusterId, sessionId, WITHDRAWAL_UNSIGNED_INFO_ROUND, payload);
-  } catch (_ignored) {}
-}
-
-function setupWithdrawalUnsignedInfoListener(node) {
-  if (!node.p2p || node._withdrawalUnsignedInfoListenerSetup) return;
-  node._withdrawalUnsignedInfoListenerSetup = true;
-  node._seenWithdrawalUnsignedInfoPayloads = node._seenWithdrawalUnsignedInfoPayloads || new Map();
-
-  const pollUnsignedInfo = async () => {
-    if (!node._withdrawalMonitorRunning) return;
-    try {
-      const payloads = await node.p2p.getPeerPayloads(
-        node._activeClusterId,
-        node._sessionId || 'bridge',
-        WITHDRAWAL_UNSIGNED_INFO_ROUND,
-        node._clusterMembers,
-      );
-      if (payloads && payloads.length > 0) {
-        const now = Date.now();
-        const seen = node._seenWithdrawalUnsignedInfoPayloads;
-        for (const [raw, ts] of seen) {
-          if (now - ts > WITHDRAWAL_UNSIGNED_INFO_TTL_MS) seen.delete(raw);
-        }
-        node._pendingWithdrawals = node._pendingWithdrawals || new Map();
-        for (const raw of payloads) {
-          const ts = seen.get(raw);
-          if (ts && now - ts <= WITHDRAWAL_UNSIGNED_INFO_TTL_MS) continue;
-          seen.set(raw, now);
-          let data;
-          try { data = JSON.parse(raw); } catch (_ignored) { continue; }
-          if (!data || data.type !== 'withdrawal-unsigned-info' || !data.txHash || !data.pbftUnsignedHash) continue;
-          const key = String(data.txHash).toLowerCase();
-          if (!key) continue;
-          let pending = node._pendingWithdrawals.get(key);
-          if (!pending) {
-            pending = { txHash: data.txHash, status: 'unknown', timestamp: Date.now() };
-            node._pendingWithdrawals.set(key, pending);
-          }
-          if (!pending.pbftUnsignedHash) pending.pbftUnsignedHash = data.pbftUnsignedHash;
-          if (data.signerSet && !pending.signerSet) pending.signerSet = data.signerSet;
-          if (data.txDataHexHash && !pending.txDataHexUnsignedHash) pending.txDataHexUnsignedHash = data.txDataHexHash;
-        }
-      }
-    } catch (_ignored) {}
-    if (node._withdrawalMonitorRunning) setTimeout(pollUnsignedInfo, 5000);
-  };
-  pollUnsignedInfo();
-}
-
-
-
 function tickPendingWithdrawals(node) {
   if (!node || !node._pendingWithdrawals || node._pendingWithdrawals.size === 0) return;
   const now = Date.now();
@@ -1022,7 +952,13 @@ async function executeWithdrawal(node, withdrawal) {
         }
         return;
       }
-      const unsignedPayload = JSON.stringify({ txDataHex: txData.txDataHex, signerSet, threshold: REQUIRED_WITHDRAWAL_SIGNATURES });
+      const unsignedPayload = JSON.stringify({
+        type: 'withdrawal-unsigned-proposal',
+        txHash: withdrawal.txHash,
+        txDataHex: txData.txDataHex,
+        signerSet,
+        threshold: REQUIRED_WITHDRAWAL_SIGNATURES,
+      });
       const unsignedHash = ethers.keccak256(ethers.toUtf8Bytes(unsignedPayload));
       const clusterId = node._activeClusterId;
       const sessionId = node._sessionId || 'bridge';
@@ -1033,20 +969,36 @@ async function executeWithdrawal(node, withdrawal) {
         pendingUnsigned.txDataHexUnsigned = txData.txDataHex;
         pendingUnsigned.pbftUnsignedHash = unsignedHash;
       }
-      (async () => {
+      try {
         try {
-          await node.p2p.runConsensus(
-            clusterId,
-            sessionId,
-            `withdrawal-tx-${shortEth}`,
-            unsignedHash,
-            node._clusterMembers,
-            Number(process.env.WITHDRAWAL_TX_PBFT_TIMEOUT_MS || process.env.WITHDRAWAL_SIGN_TIMEOUT_MS || 300000),
-          );
-        } catch (err) {
-          console.log('[Withdrawal] Unsigned-tx PBFT error (background):', err.message || String(err));
+          await node.p2p.broadcastRoundData(clusterId, sessionId, WITHDRAWAL_UNSIGNED_INFO_ROUND, unsignedPayload);
+        } catch (_ignored) {}
+        const txPbftTimeoutMs = Number(process.env.WITHDRAWAL_TX_PBFT_TIMEOUT_MS || process.env.WITHDRAWAL_SIGN_TIMEOUT_MS || 300000);
+        const txConsensus = await node.p2p.runConsensus(
+          clusterId,
+          sessionId,
+          `withdrawal-tx-${shortEth}`,
+          unsignedHash,
+          node._clusterMembers,
+          txPbftTimeoutMs,
+        );
+        if (!txConsensus || !txConsensus.success) {
+          const reason = txConsensus && txConsensus.reason ? txConsensus.reason : 'tx_pbft_failed';
+          const pending = node._pendingWithdrawals.get(key);
+          if (pending) {
+            pending.status = 'failed';
+            pending.error = reason;
+          }
+          return;
         }
-      })();
+      } catch (err) {
+        const pending = node._pendingWithdrawals.get(key);
+        if (pending) {
+          pending.status = 'failed';
+          pending.error = err && err.message ? err.message : 'tx_pbft_error';
+        }
+        return;
+      }
     } catch (e) {
       console.log('[Withdrawal] Failed to create transfer:', e.message || String(e));
       const pending = node._pendingWithdrawals.get(key);
