@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { ethers } from 'ethers';
 import { isValidMoneroAddress } from './bridge-service.js';
 
@@ -54,6 +56,60 @@ const MULTISIG_SYNC_ROUND = Number(process.env.MULTISIG_SYNC_ROUND || 9800);
 const MULTISIG_SYNC_TIMEOUT_MS = Number(process.env.MULTISIG_SYNC_TIMEOUT_MS || 180000);
 const WITHDRAWAL_SIGN_STEP_TIMEOUT_MS = Number(process.env.WITHDRAWAL_SIGN_STEP_TIMEOUT_MS || 20000);
 
+const WITHDRAWAL_PROCESSED_STORE_PATH = path.join(__dirname, '.withdrawals-processed.json');
+let _processedWithdrawalsStore = null;
+let _processedWithdrawalsSavePending = false;
+
+function loadProcessedWithdrawalsStore() {
+  if (_processedWithdrawalsStore) return _processedWithdrawalsStore;
+  try {
+    const raw = fs.readFileSync(WITHDRAWAL_PROCESSED_STORE_PATH, 'utf8');
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr)) {
+      _processedWithdrawalsStore = new Set(arr.map((v) => String(v || '').toLowerCase()));
+    } else {
+      _processedWithdrawalsStore = new Set();
+    }
+  } catch (_ignored) {
+    _processedWithdrawalsStore = new Set();
+  }
+  return _processedWithdrawalsStore;
+}
+
+function scheduleProcessedWithdrawalsStoreSave() {
+  if (!_processedWithdrawalsStore || _processedWithdrawalsSavePending) return;
+  _processedWithdrawalsSavePending = true;
+  setTimeout(() => {
+    try {
+      const list = Array.from(_processedWithdrawalsStore);
+      fs.writeFileSync(WITHDRAWAL_PROCESSED_STORE_PATH, JSON.stringify(list), { mode: 0o600 });
+    } catch (e) {
+      console.log('[Withdrawal] Failed to persist processed withdrawals:', e.message || String(e));
+    }
+    _processedWithdrawalsSavePending = false;
+  }, 50);
+}
+
+function markWithdrawalProcessedPersistent(txHash) {
+  const store = loadProcessedWithdrawalsStore();
+  const key = String(txHash || '').toLowerCase();
+  if (!key) return;
+  if (store.has(key)) return;
+  store.add(key);
+  scheduleProcessedWithdrawalsStoreSave();
+}
+
+function markWithdrawalProcessedInMemory(node, txHash) {
+  if (!node) return;
+  const key = String(txHash || '').toLowerCase();
+  if (!key) return;
+  node._processedWithdrawals = node._processedWithdrawals || new Set();
+  if (!node._processedWithdrawals.has(key)) {
+    node._processedWithdrawals.add(key);
+    markWithdrawalProcessedPersistent(key);
+  }
+}
+
 
 export async function startWithdrawalMonitor(node) {
   if (node._withdrawalMonitorRunning) return;
@@ -72,6 +128,10 @@ export async function startWithdrawalMonitor(node) {
   }
   node._withdrawalMonitorRunning = true;
   node._processedWithdrawals = node._processedWithdrawals || new Set();
+  try {
+    const persisted = loadProcessedWithdrawalsStore();
+    for (const h of persisted) node._processedWithdrawals.add(h);
+  } catch (_ignored) {}
   node._pendingWithdrawals = node._pendingWithdrawals || new Map();
   console.log('[Withdrawal] Starting withdrawal event monitor...');
   try {
@@ -273,7 +333,7 @@ async function handleBurnEvent(node, event) {
     if (amount == null) {
       console.log('[Withdrawal] Burn event missing amount, skipping');
       markProcessed = true;
-      node._processedWithdrawals.add(key);
+      markWithdrawalProcessedInMemory(node, key);
       return;
     }
     console.log('[Withdrawal] TokensBurned event detected:');
@@ -304,7 +364,7 @@ async function handleBurnEvent(node, event) {
     if (!isValidMoneroAddress(xmrAddress)) {
       console.log(`[Withdrawal] Invalid Monero address, skipping: ${xmrAddress}`);
       markProcessed = true;
-      node._processedWithdrawals.add(key);
+      markWithdrawalProcessedInMemory(node, key);
       return;
     }
     const xmrAtomicAmount = BigInt(amount) / BigInt(1e6);
@@ -314,7 +374,7 @@ async function handleBurnEvent(node, event) {
       xmrAddress,
       zxmrAmount: amount.toString(),
       xmrAmount: xmrAtomicAmount.toString(),
-      xmrAmountNumeric: Number(xmrAtomicAmount),
+      xmrAmountAtomic: xmrAtomicAmount,
       blockNumber,
       timestamp: Date.now(),
     };
@@ -335,7 +395,7 @@ async function handleBurnEvent(node, event) {
         e.message || String(e),
       );
     }
-    if (markProcessed) node._processedWithdrawals.add(key);
+    if (markProcessed) markWithdrawalProcessedInMemory(node, key);
   } catch (e) {
     console.log('[Withdrawal] Error handling burn event:', e.message || String(e));
   }
@@ -623,7 +683,7 @@ async function executeWithdrawal(node, withdrawal) {
       );
     }
     console.log('[Withdrawal] Creating multisig transfer transaction...');
-    const destinations = [{ address: withdrawal.xmrAddress, amount: withdrawal.xmrAmountNumeric }];
+    const destinations = [{ address: withdrawal.xmrAddress, amount: withdrawal.xmrAmountAtomic }];
     let txData;
     try {
       txData = await node.monero.transfer(destinations);
@@ -799,6 +859,10 @@ async function executeWithdrawal(node, withdrawal) {
       if (pending2) {
         pending2.pbftSignedHash = signedHash;
         pending2.signedPbftSuccess = !!(signedConsensus && signedConsensus.success);
+      }
+      const finalPending = node._pendingWithdrawals.get(key);
+      if (finalPending && finalPending.status === 'completed') {
+        node._pendingWithdrawals.delete(key);
       }
     } catch (e) {
       console.log('[Withdrawal] Failed to submit transaction:', e.message || String(e));

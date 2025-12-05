@@ -317,10 +317,42 @@ class MoneroRPC {
     return result.tx_hash_list;
   }
 
+  _normalizeDestinations(destinations) {
+    if (!Array.isArray(destinations)) return [];
+    return destinations.map((d) => {
+      const dest = { ...d };
+      const rawAmount = dest.amount;
+      if (typeof rawAmount === 'bigint') {
+        if (rawAmount < 0n) {
+          throw new Error('Monero transfer amount cannot be negative');
+        }
+        if (rawAmount > BigInt(Number.MAX_SAFE_INTEGER)) {
+          throw new Error('Monero transfer amount too large for safe JSON numeric representation');
+        }
+        dest.amount = Number(rawAmount);
+      } else if (typeof rawAmount === 'string') {
+        try {
+          const bi = BigInt(rawAmount);
+          if (bi < 0n) {
+            throw new Error('Monero transfer amount cannot be negative');
+          }
+          if (bi > BigInt(Number.MAX_SAFE_INTEGER)) {
+            throw new Error('Monero transfer amount too large for safe JSON numeric representation');
+          }
+          dest.amount = Number(bi);
+        } catch (e) {
+          throw new Error('Invalid Monero transfer amount string');
+        }
+      }
+      return dest;
+    });
+  }
+
   async transfer(destinations, mixinOrRingSize = 16) {
+    const safeDestinations = this._normalizeDestinations(destinations);
     try {
       const result = await this.call('transfer', {
-        destinations,
+        destinations: safeDestinations,
         ring_size: mixinOrRingSize,
         get_tx_key: true,
         do_not_relay: true,
@@ -340,7 +372,7 @@ class MoneroRPC {
       ) {
         try {
           const result = await this.call('transfer', {
-            destinations,
+            destinations: safeDestinations,
             mixin: mixinOrRingSize,
             get_tx_key: true,
             do_not_relay: true,
