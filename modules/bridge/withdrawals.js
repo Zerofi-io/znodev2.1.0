@@ -307,6 +307,17 @@ function getWithdrawalTurnIndex(node) {
 }
 
 
+function getCanonicalSignerSet(node) {
+  if (!node._clusterMembers || node._clusterMembers.length === 0) return [];
+  const list = [...node._clusterMembers].map((a) => String(a || '').toLowerCase()).sort();
+  return list.slice(0, REQUIRED_WITHDRAWAL_SIGNATURES);
+}
+
+function getWithdrawalShortHash(txHash) {
+  if (!txHash) return '';
+  return String(txHash).slice(0, 18);
+}
+
 async function runMultisigInfoSync(node) {
   if (!node || !node.monero || !node.p2p || !node._activeClusterId || !Array.isArray(node._clusterMembers) || node._clusterMembers.length === 0) {
     return { success: false, reason: 'no_cluster_or_monero' };
@@ -471,6 +482,14 @@ async function executeWithdrawal(node, withdrawal) {
   node._pendingWithdrawals = node._pendingWithdrawals || new Map();
   const key = withdrawal.txHash.toLowerCase();
   node._pendingWithdrawals.set(key, { ...withdrawal, status: 'pending', startedAt: Date.now() });
+  const pending0 = node._pendingWithdrawals.get(key);
+  if (pending0) {
+    pending0.signerSet = null;
+    pending0.txDataHexUnsigned = null;
+    pending0.txDataHexSigned = null;
+    pending0.pbftUnsignedHash = null;
+    pending0.pbftSignedHash = null;
+  }
   try {
     let balanceInfo = null;
     try {
@@ -509,6 +528,49 @@ async function executeWithdrawal(node, withdrawal) {
     try {
       txData = await node.monero.transfer(destinations);
       console.log('[Withdrawal] Transfer transaction created');
+      const signerSet = getCanonicalSignerSet(node);
+      if (!signerSet || signerSet.length < REQUIRED_WITHDRAWAL_SIGNATURES) {
+        console.log('[Withdrawal] Not enough signers available for PBFT tx commit');
+        const pending = node._pendingWithdrawals.get(key);
+        if (pending) {
+          pending.status = 'failed';
+          pending.error = 'not_enough_signers_for_tx_pbft';
+        }
+        return;
+      }
+      const unsignedPayload = JSON.stringify({ txDataHex: txData.txDataHex, signerSet, threshold: REQUIRED_WITHDRAWAL_SIGNATURES });
+      const unsignedHash = ethers.keccak256(ethers.toUtf8Bytes(unsignedPayload));
+      const clusterId = node._activeClusterId;
+      const sessionId = node._sessionId || 'bridge';
+      const shortEth = getWithdrawalShortHash(withdrawal.txHash);
+      const txPbftTimeoutMs = Number(process.env.WITHDRAWAL_TX_PBFT_TIMEOUT_MS || process.env.WITHDRAWAL_SIGN_TIMEOUT_MS || 300000);
+      let txConsensus = null;
+      try {
+        txConsensus = await node.p2p.runConsensus(clusterId, sessionId, `withdrawal-tx-${shortEth}`, unsignedHash, node._clusterMembers, txPbftTimeoutMs);
+      } catch (err) {
+        console.log('[Withdrawal] PBFT error for unsigned tx:', err.message || String(err));
+        const pending = node._pendingWithdrawals.get(key);
+        if (pending) {
+          pending.status = 'failed';
+          pending.error = 'tx_pbft_error';
+        }
+        return;
+      }
+      if (!txConsensus || !txConsensus.success) {
+        console.log('[Withdrawal] PBFT consensus failed for unsigned tx');
+        const pending = node._pendingWithdrawals.get(key);
+        if (pending) {
+          pending.status = 'failed';
+          pending.error = 'tx_pbft_failed';
+        }
+        return;
+      }
+      const pending = node._pendingWithdrawals.get(key);
+      if (pending) {
+        pending.signerSet = signerSet;
+        pending.txDataHexUnsigned = txData.txDataHex;
+        pending.pbftUnsignedHash = unsignedHash;
+      }
     } catch (e) {
       console.log('[Withdrawal] Failed to create transfer:', e.message || String(e));
       const pending = node._pendingWithdrawals.get(key);
@@ -571,13 +633,32 @@ async function executeWithdrawal(node, withdrawal) {
       return;
     }
     try {
-      const submitResult = await node.monero.call('submit_multisig', { tx_data_hex: signedTx.txDataHex || txData.txDataHex }, 180000);
+      const finalTxHex = signedTx.txDataHex || txData.txDataHex;
+      const submitResult = await node.monero.call('submit_multisig', { tx_data_hex: finalTxHex }, 180000);
       console.log('[Withdrawal] Transaction submitted successfully');
       console.log(`  TX Hash(es): ${submitResult.tx_hash_list ? submitResult.tx_hash_list.join(', ') : 'unknown'}`);
       const pending = node._pendingWithdrawals.get(key);
       if (pending) {
         pending.status = 'completed';
         pending.xmrTxHashes = submitResult.tx_hash_list;
+        pending.txDataHexSigned = finalTxHex;
+      }
+      const clusterId = node._activeClusterId;
+      const sessionId = node._sessionId || 'bridge';
+      const shortEth = getWithdrawalShortHash(withdrawal.txHash);
+      const signedPayload = JSON.stringify({ txDataHex: finalTxHex, txHashList: submitResult.tx_hash_list || [] });
+      const signedHash = ethers.keccak256(ethers.toUtf8Bytes(signedPayload));
+      const txPbftTimeoutMs = Number(process.env.WITHDRAWAL_TX_PBFT_TIMEOUT_MS || process.env.WITHDRAWAL_SIGN_TIMEOUT_MS || 300000);
+      let signedConsensus = null;
+      try {
+        signedConsensus = await node.p2p.runConsensus(clusterId, sessionId, `withdrawal-signed-${shortEth}`, signedHash, node._clusterMembers, txPbftTimeoutMs);
+      } catch (err) {
+        console.log('[Withdrawal] PBFT error for signed tx:', err.message || String(err));
+      }
+      const pending2 = node._pendingWithdrawals.get(key);
+      if (pending2) {
+        pending2.pbftSignedHash = signedHash;
+        pending2.signedPbftSuccess = !!(signedConsensus && signedConsensus.success);
       }
     } catch (e) {
       console.log('[Withdrawal] Failed to submit transaction:', e.message || String(e));
