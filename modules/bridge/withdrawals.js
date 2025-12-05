@@ -95,6 +95,26 @@ export async function startWithdrawalMonitor(node) {
     });
     console.log('[Withdrawal] Now listening for TokensBurned events');
     setupWithdrawalClaimListener(node);
+    
+    // Run startup multisig sync if needed
+    setTimeout(async () => {
+      try {
+        const bal = await node.monero.getBalance();
+        if (bal && bal.multisigImportNeeded) {
+          console.log('[MultisigSync] Startup: multisig_import_needed=true, initiating sync...');
+          const result = await runMultisigInfoSync(node);
+          if (result && result.success) {
+            console.log('[MultisigSync] Startup sync completed successfully');
+          } else {
+            console.log('[MultisigSync] Startup sync failed:', result && result.reason ? result.reason : 'unknown');
+          }
+        } else {
+          console.log('[MultisigSync] Startup: multisig wallet is in sync');
+        }
+      } catch (e) {
+        console.log('[MultisigSync] Startup sync error:', e.message || String(e));
+      }
+    }, 5000);
   } catch (e) {
     console.log('[Withdrawal] Failed to setup event listener:', e.message || String(e));
     node._withdrawalMonitorRunning = false;
