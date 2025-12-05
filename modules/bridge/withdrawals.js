@@ -536,13 +536,12 @@ async function runMultisigInfoSync(node) {
   }
 
   let importedOutputs = 0;
-  for (const info of infos) {
-    try {
-      const n = await node.monero.importMultisigInfo(info);
-      if (typeof n === 'number') importedOutputs += n;
-    } catch (e) {
-      console.log('[MultisigSync] import_multisig_info failed for one info blob:', e.message || String(e));
-    }
+  try {
+    const n = await node.monero.importMultisigInfo(infos);
+    if (typeof n === 'number') importedOutputs = n;
+  } catch (e) {
+    console.log('[MultisigSync] import_multisig_info failed:', e.message || String(e));
+    return { success: false, reason: 'import_failed', importedOutputs: 0 };
   }
 
   let finalBalance = null;

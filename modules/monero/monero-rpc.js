@@ -294,8 +294,9 @@ class MoneroRPC {
   }
 
   async importMultisigInfo(info) {
+    const infoArray = Array.isArray(info) ? info : [info];
     const result = await this.call('import_multisig_info', {
-      info,
+      info: infoArray,
     });
     return result.n_outputs;
   }

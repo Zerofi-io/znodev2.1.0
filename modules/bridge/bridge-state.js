@@ -65,7 +65,12 @@ export function saveBridgeState(node) {
       processedWithdrawals: node._processedWithdrawals ? Array.from(node._processedWithdrawals) : [],
       pendingWithdrawals: node._pendingWithdrawals ? Object.fromEntries(node._pendingWithdrawals) : {},
     };
-    fs.writeFileSync(statePath, JSON.stringify(data, null, 2), { mode: 0o600 });
+    const json = JSON.stringify(
+      data,
+      (key, value) => (typeof value === 'bigint' ? value.toString() : value),
+      2,
+    );
+    fs.writeFileSync(statePath, json, { mode: 0o600 });
   } catch (e) {
     console.log('[Bridge] Failed to save bridge state:', e.message || String(e));
   }
