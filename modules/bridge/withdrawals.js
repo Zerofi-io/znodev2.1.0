@@ -375,45 +375,25 @@ function setupWithdrawalSignStepListener(node) {
             const key = `${String(data.withdrawalTxHash).toLowerCase()}:${idx}`;
             if (node._handledSignSteps.has(key)) continue;
 
-            const trySignStepTx = async () => {
-              try {
-                return await node.monero.signMultisig(data.txDataHex);
-              } catch (e) {
-                const msg = e.message || String(e);
-                if (msg.includes('stale data') || msg.includes('export fresh multisig data')) {
-                  console.log(
-                    '[Withdrawal] Failed to sign step tx due to stale multisig data, running multisig sync before retry:',
-                    msg,
-                  );
-                  try {
-                    const syncResult = await runMultisigInfoSync(node);
-                    if (syncResult && syncResult.success) {
-                      console.log(
-                        '[Withdrawal] Multisig sync before sign step completed; retrying sign_multisig',
-                      );
-                      return await node.monero.signMultisig(data.txDataHex);
-                    }
-                    console.log(
-                      '[Withdrawal] Multisig sync before sign step failed:',
-                      syncResult && syncResult.reason ? syncResult.reason : 'unknown',
-                    );
-                  } catch (e2) {
-                    console.log(
-                      '[Withdrawal] Multisig sync before sign step error:',
-                      e2.message || String(e2),
-                    );
-                  }
-                } else {
-                  console.log('[Withdrawal] Failed to sign step tx:', msg);
-                }
-                throw e;
-              }
-            };
-
             let signedTx;
             try {
-              signedTx = await trySignStepTx();
-            } catch (_e) {
+              signedTx = await node.monero.signMultisig(data.txDataHex);
+            } catch (e) {
+              const msg = e.message || String(e);
+              if (msg.includes('stale data') || msg.includes('export fresh multisig data')) {
+                console.log('[Withdrawal] Sign step stale multisig data, notifying coordinator');
+                try {
+                  const notice = JSON.stringify({
+                    type: 'withdrawal-sign-step-stale',
+                    withdrawalTxHash: data.withdrawalTxHash,
+                    stepIndex: idx,
+                    signer: node.wallet.address,
+                  });
+                  await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', 9901, notice);
+                } catch (_ignored) {}
+              } else {
+                console.log('[Withdrawal] Failed to sign step tx:', msg);
+              }
               node._handledSignSteps.add(key);
               continue;
             }
@@ -920,7 +900,17 @@ async function waitForSignStepResponse(node, withdrawalTxHash, stepIndex, signer
       for (const raw of payloads) {
         try {
           const data = JSON.parse(raw);
-          if (!data || data.type !== 'withdrawal-sign-step-signed') continue;
+          if (!data || !data.type) continue;
+          if (data.type === 'withdrawal-sign-step-stale') {
+            if (!data.withdrawalTxHash) continue;
+            if (String(data.withdrawalTxHash).toLowerCase() !== key) continue;
+            const idx = Number(data.stepIndex);
+            if (!Number.isFinite(idx) || idx !== stepIndex) continue;
+            const s2 = data.signer ? String(data.signer).toLowerCase() : '';
+            if (!s2 || (signerLc && s2 !== signerLc)) continue;
+            return { stale: true };
+          }
+          if (data.type !== 'withdrawal-sign-step-signed') continue;
           if (!data.withdrawalTxHash) continue;
           if (String(data.withdrawalTxHash).toLowerCase() !== key) continue;
           const idx = Number(data.stepIndex);
@@ -991,6 +981,22 @@ async function executeWithdrawal(node, withdrawal) {
     pending0.txDataHexSigned = null;
     pending0.pbftUnsignedHash = null;
     pending0.pbftSignedHash = null;
+  }
+  if (existing && existing.error === 'stale_multisig_tx') {
+    console.log('[Withdrawal] Previous attempt failed with stale_multisig_tx, running multisig sync before rebuilding transaction');
+    const syncResult = await runMultisigInfoSync(node);
+    if (!syncResult || !syncResult.success) {
+      console.log(
+        '[Withdrawal] Multisig sync before transfer failed:',
+        syncResult && syncResult.reason ? syncResult.reason : 'unknown',
+      );
+      const pending = node._pendingWithdrawals.get(key);
+      if (pending) {
+        pending.status = 'failed';
+        pending.error = `multisig_sync_failed:${(syncResult && syncResult.reason) || 'unknown'}`;
+      }
+      return;
+    }
   }
   try {
     let balanceInfo = null;
@@ -1126,9 +1132,18 @@ async function executeWithdrawal(node, withdrawal) {
         await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', 9900, requestPayload);
       } catch (_ignored) {}
       const response = await waitForSignStepResponse(node, withdrawal.txHash, i, stepSigner, stepTimeoutMs);
-      if (!response || !response.txDataHex) {
+      if (!response || (!response.txDataHex && !response.stale)) {
         console.log('[Withdrawal] Sign step timeout or invalid response, skipping signer');
         continue;
+      }
+      if (response.stale) {
+        console.log('[Withdrawal] Sign step reported stale multisig state, aborting transaction for rebuild');
+        const p = node._pendingWithdrawals.get(key);
+        if (p) {
+          p.status = 'sign_failed';
+          p.error = 'stale_multisig_tx';
+        }
+        return;
       }
       const newTxDataHex = response.txDataHex;
       const stepPayload = JSON.stringify({
