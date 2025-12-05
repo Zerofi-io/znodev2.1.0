@@ -267,6 +267,32 @@ function setupWithdrawalSignStepListener(node) {
   node._handledSignSteps = node._handledSignSteps || new Set();
   const pollSignSteps = async () => {
     if (!node._withdrawalMonitorRunning) return;
+    if (!node._withdrawalSignInitialSyncDone) {
+      node._withdrawalSignInitialSyncDone = true;
+      try {
+        console.log('[Withdrawal] Running initial multisig sync before servicing sign-step requests...');
+        const syncResult = await runMultisigInfoSync(node);
+        if (!syncResult || !syncResult.success) {
+          console.log(
+            '[Withdrawal] Initial multisig sync before sign-step handling failed:',
+            syncResult && syncResult.reason ? syncResult.reason : 'unknown',
+          );
+        } else {
+          console.log(
+            `[Withdrawal] Initial multisig sync before sign-step handling completed; importedOutputs=${
+              typeof syncResult.importedOutputs === 'number'
+                ? syncResult.importedOutputs
+                : 'unknown'
+            }`,
+          );
+        }
+      } catch (e) {
+        console.log(
+          '[Withdrawal] Initial multisig sync before sign-step handling error:',
+          e.message || String(e),
+        );
+      }
+    }
     try {
       const payloads = await node.p2p.getPeerPayloads(
         node._activeClusterId,
@@ -287,11 +313,46 @@ function setupWithdrawalSignStepListener(node) {
             if (!Number.isFinite(idx) || idx < 0) continue;
             const key = `${String(data.withdrawalTxHash).toLowerCase()}:${idx}`;
             if (node._handledSignSteps.has(key)) continue;
+
+            const trySignStepTx = async () => {
+              try {
+                return await node.monero.signMultisig(data.txDataHex);
+              } catch (e) {
+                const msg = e.message || String(e);
+                if (msg.includes('stale data') || msg.includes('export fresh multisig data')) {
+                  console.log(
+                    '[Withdrawal] Failed to sign step tx due to stale multisig data, running multisig sync before retry:',
+                    msg,
+                  );
+                  try {
+                    const syncResult = await runMultisigInfoSync(node);
+                    if (syncResult && syncResult.success) {
+                      console.log(
+                        '[Withdrawal] Multisig sync before sign step completed; retrying sign_multisig',
+                      );
+                      return await node.monero.signMultisig(data.txDataHex);
+                    }
+                    console.log(
+                      '[Withdrawal] Multisig sync before sign step failed:',
+                      syncResult && syncResult.reason ? syncResult.reason : 'unknown',
+                    );
+                  } catch (e2) {
+                    console.log(
+                      '[Withdrawal] Multisig sync before sign step error:',
+                      e2.message || String(e2),
+                    );
+                  }
+                } else {
+                  console.log('[Withdrawal] Failed to sign step tx:', msg);
+                }
+                throw e;
+              }
+            };
+
             let signedTx;
             try {
-              signedTx = await node.monero.signMultisig(data.txDataHex);
-            } catch (e) {
-              console.log('[Withdrawal] Failed to sign step tx:', e.message || String(e));
+              signedTx = await trySignStepTx();
+            } catch (_e) {
               node._handledSignSteps.add(key);
               continue;
             }
