@@ -10,6 +10,7 @@ const REQUIRED_MINT_SIGNATURES = 7;
 const MINT_SIGNATURE_TIMEOUT_MS = Number(process.env.MINT_SIGNATURE_TIMEOUT_MS || 120000);
 const MAX_STAKE_QUERY_FAILURES = 3;
 const DEPOSIT_RECIPIENT_GRACE_MS = Number(process.env.DEPOSIT_RECIPIENT_GRACE_MS || 300000);
+const DEPOSIT_MAX_RETRY_MS = Number(process.env.DEPOSIT_MAX_RETRY_MS || 3600000);
 
 function isBridgeEnabled() {
   const v = process.env.BRIDGE_ENABLED;
@@ -131,18 +132,27 @@ async function checkForDeposits(node, minConfirmations) {
     console.log(`  Payment ID: ${deposit.paymentId || 'none'}`);
     const recipient = parseRecipientFromPaymentId(node, deposit.paymentId);
     if (!recipient) {
+      const pid = deposit.paymentId || '';
+      const looksLikeGeneratedId = /^[0-9a-fA-F]{16}$/.test(pid);
       const now = Date.now();
       if (!node._unresolvedDeposits) node._unresolvedDeposits = new Map();
       const first = node._unresolvedDeposits.get(txid) || now;
       node._unresolvedDeposits.set(txid, first);
-      if (now - first >= DEPOSIT_RECIPIENT_GRACE_MS) {
-        console.log(`[Bridge] Marking deposit ${txid} as orphan: no valid recipient in payment ID`);
+      const ageMs = now - first;
+      const limitMs = looksLikeGeneratedId ? DEPOSIT_MAX_RETRY_MS : DEPOSIT_RECIPIENT_GRACE_MS;
+      if (ageMs >= limitMs) {
+        const ageSec = Math.floor(ageMs / 1000);
+        console.log(`[Bridge] Marking deposit ${txid} as orphan after ${ageSec}s with unknown recipient (paymentId=${pid})`);
         if (!node._processedDeposits) node._processedDeposits = new Set();
         node._processedDeposits.add(txid);
         node._unresolvedDeposits.delete(txid);
         saveBridgeState(node);
       } else {
-        console.log(`[Bridge] Skipping deposit ${txid}: no valid recipient in payment ID (retrying for ${Math.floor((DEPOSIT_RECIPIENT_GRACE_MS - (now - first)) / 1000)}s more)`);
+        if (looksLikeGeneratedId) {
+          console.log(`[Bridge] Skipping deposit ${txid}: no mapping yet for generated payment ID ${pid} (retrying for ${Math.floor((limitMs - ageMs) / 1000)}s more)`);
+        } else {
+          console.log(`[Bridge] Skipping deposit ${txid}: no valid recipient in payment ID (retrying for ${Math.floor((limitMs - ageMs) / 1000)}s more)`);
+        }
       }
       continue;
     }
@@ -171,19 +181,21 @@ async function checkForDeposits(node, minConfirmations) {
       if (node._failedConsensusDeposits) node._failedConsensusDeposits.delete(txid);
       saveBridgeState(node);
     } else {
-      // Track failed consensus attempts with grace period
+      // Track failed consensus attempts with grace period; hard-cap at DEPOSIT_MAX_RETRY_MS then orphan.
       const now = Date.now();
       if (!node._failedConsensusDeposits) node._failedConsensusDeposits = new Map();
       const firstAttempt = node._failedConsensusDeposits.get(txid) || now;
       node._failedConsensusDeposits.set(txid, firstAttempt);
-      if (now - firstAttempt >= DEPOSIT_RECIPIENT_GRACE_MS) {
-        console.log(`[Bridge] Marking deposit ${txid} as orphan after repeated consensus failures`);
+      const ageMs = now - firstAttempt;
+      if (ageMs >= DEPOSIT_MAX_RETRY_MS) {
+        const ageSec = Math.floor(ageMs / 1000);
+        console.log(`[Bridge] Marking deposit ${txid} as orphan after repeated consensus failures for ${ageSec}s`);
         if (!node._processedDeposits) node._processedDeposits = new Set();
         node._processedDeposits.add(txid);
         node._failedConsensusDeposits.delete(txid);
         saveBridgeState(node);
       } else {
-        console.log(`[Bridge] Will retry consensus for deposit ${txid} (retrying for ${Math.floor((DEPOSIT_RECIPIENT_GRACE_MS - (now - firstAttempt)) / 1000)}s more)`);
+        console.log(`[Bridge] Will retry consensus for deposit ${txid} (retrying for ${Math.floor((DEPOSIT_MAX_RETRY_MS - ageMs) / 1000)}s more)`);
       }
     }
   }
@@ -328,9 +340,14 @@ async function selectClusterForDeposit(node, ethAddress, paymentId) {
     return { clusterId: node._activeClusterId || ethers.ZeroHash, requestKey: null };
   }
   let clusters;
-  try { clusters = await node.registry.getActiveClusters(); }
-  catch (e) {
-    throw new Error('Failed to fetch active clusters');
+  try {
+    clusters = await node.registry.getActiveClusters();
+  } catch (e) {
+    // Older registry contracts may not implement getActiveClusters; fall back to the
+    // node's active cluster so deposits can still be accepted when the cluster
+    // is otherwise healthy and finalized.
+    console.log('[Bridge] Warning: getActiveClusters failed, falling back to active cluster:', e.reason || e.message || String(e));
+    return { clusterId: node._activeClusterId || ethers.ZeroHash, requestKey: null };
   }
   if (!clusters || clusters.length === 0) {
     return { clusterId: node._activeClusterId || ethers.ZeroHash, requestKey: null };

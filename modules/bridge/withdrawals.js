@@ -201,6 +201,7 @@ async function handleBurnEvent(node, event) {
       xmrAddress,
       zxmrAmount: amount.toString(),
       xmrAmount: xmrAtomicAmount.toString(),
+      xmrAmountNumeric: Number(xmrAtomicAmount),
       blockNumber,
       timestamp: Date.now(),
     };
@@ -293,7 +294,7 @@ async function executeWithdrawal(node, withdrawal) {
   node._pendingWithdrawals.set(key, { ...withdrawal, status: 'pending', startedAt: Date.now() });
   try {
     console.log('[Withdrawal] Creating multisig transfer transaction...');
-    const destinations = [{ address: withdrawal.xmrAddress, amount: BigInt(withdrawal.xmrAmount) }];
+    const destinations = [{ address: withdrawal.xmrAddress, amount: withdrawal.xmrAmountNumeric }];
     let txData;
     try {
       txData = await node.monero.transfer(destinations);
