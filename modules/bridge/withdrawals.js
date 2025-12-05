@@ -613,13 +613,31 @@ async function executeWithdrawal(node, withdrawal) {
       signatureRound,
       node._clusterMembers,
     );
-    if (!complete && signatures.length < REQUIRED_WITHDRAWAL_SIGNATURES) {
+    const pending = node._pendingWithdrawals.get(key);
+    const signerSet = pending && Array.isArray(pending.signerSet) && pending.signerSet.length > 0
+      ? pending.signerSet.map((a) => String(a || '').toLowerCase())
+      : getCanonicalSignerSet(node);
+    const signerSetSet = new Set(signerSet);
+    const uniqueSigners = new Set();
+    if (signatures && signatures.length > 0) {
+      for (const raw of signatures) {
+        try {
+          const data = JSON.parse(raw);
+          if (data && data.type === 'withdrawal-signature' && data.withdrawalTxHash && String(data.withdrawalTxHash).toLowerCase() === key) {
+            const s = data.signer ? String(data.signer).toLowerCase() : '';
+            if (s && signerSetSet.has(s)) {
+              uniqueSigners.add(s);
+            }
+          }
+        } catch (_ignored) {}
+      }
+    }
+    if (!complete && uniqueSigners.size < REQUIRED_WITHDRAWAL_SIGNATURES) {
       console.log('[Withdrawal] Timeout waiting for multisig signatures');
     }
-    console.log(`[Withdrawal] Collected ${signatures.length} multisig signatures`);
-    if (signatures.length < REQUIRED_WITHDRAWAL_SIGNATURES) {
-      console.log('[Withdrawal] Failed to collect enough signatures');
-      const pending = node._pendingWithdrawals.get(key);
+    console.log(`[Withdrawal] Collected ${uniqueSigners.size} multisig signatures from canonical signer set`);
+    if (uniqueSigners.size < REQUIRED_WITHDRAWAL_SIGNATURES) {
+      console.log('[Withdrawal] Failed to collect enough signatures from canonical signer set');
       if (pending) pending.status = 'signing_failed';
       return;
     }
@@ -693,6 +711,7 @@ export async function handleWithdrawalSignRequest(node, data) {
       type: 'withdrawal-signature',
       withdrawalTxHash: data.withdrawalTxHash,
       signedTxHex: signedTx.txDataHex,
+      signer: node.wallet && node.wallet.address ? node.wallet.address : null,
     }));
     console.log(`[Withdrawal] Broadcasted signature for ${data.withdrawalTxHash.slice(0, 18)}`);
   } catch (e) {
