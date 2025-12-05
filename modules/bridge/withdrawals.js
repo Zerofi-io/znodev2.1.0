@@ -59,6 +59,8 @@ const REQUIRED_WITHDRAWAL_SIGNATURES = 7;
 const MULTISIG_SYNC_ROUND = Number(process.env.MULTISIG_SYNC_ROUND || 9800);
 const MULTISIG_SYNC_TIMEOUT_MS = Number(process.env.MULTISIG_SYNC_TIMEOUT_MS || 180000);
 const WITHDRAWAL_SIGN_STEP_TIMEOUT_MS = Number(process.env.WITHDRAWAL_SIGN_STEP_TIMEOUT_MS || 20000);
+const WITHDRAWAL_MAX_RETRY_WINDOW_MS = Number(process.env.WITHDRAWAL_MAX_RETRY_WINDOW_MS || 600000);
+const WITHDRAWAL_RETRY_INTERVAL_MS = Number(process.env.WITHDRAWAL_RETRY_INTERVAL_MS || 30000);
 
 const WITHDRAWAL_PROCESSED_STORE_PATH = path.join(__dirname, '.withdrawals-processed.json');
 let _processedWithdrawalsStore = null;
@@ -137,6 +139,8 @@ export async function startWithdrawalMonitor(node) {
     for (const h of persisted) node._processedWithdrawals.add(h);
   } catch (_ignored) {}
   node._pendingWithdrawals = node._pendingWithdrawals || new Map();
+  if (node._withdrawalRetryTimer) clearInterval(node._withdrawalRetryTimer);
+  node._withdrawalRetryTimer = setInterval(() => { tickPendingWithdrawals(node); }, WITHDRAWAL_RETRY_INTERVAL_MS);
   console.log('[Withdrawal] Starting withdrawal event monitor...');
   try {
     const activeClusterId = node._activeClusterId;
@@ -168,6 +172,10 @@ export async function startWithdrawalMonitor(node) {
 
 export function stopWithdrawalMonitor(node) {
   node._withdrawalMonitorRunning = false;
+  if (node._withdrawalRetryTimer) {
+    clearInterval(node._withdrawalRetryTimer);
+    node._withdrawalRetryTimer = null;
+  }
   if (node.bridge) {
     try { node.bridge.removeAllListeners('TokensBurned'); }
     catch (_ignored) {}
@@ -336,7 +344,6 @@ async function handleBurnEvent(node, event) {
     let markProcessed = false;
     if (amount == null) {
       console.log('[Withdrawal] Burn event missing amount, skipping');
-      markProcessed = true;
       markWithdrawalProcessedInMemory(node, key);
       return;
     }
@@ -367,7 +374,6 @@ async function handleBurnEvent(node, event) {
     }
     if (!isValidMoneroAddress(xmrAddress)) {
       console.log(`[Withdrawal] Invalid Monero address, skipping: ${xmrAddress}`);
-      markProcessed = true;
       markWithdrawalProcessedInMemory(node, key);
       return;
     }
@@ -386,7 +392,6 @@ async function handleBurnEvent(node, event) {
       const consensusResult = await runWithdrawalConsensus(node, withdrawal);
       if (consensusResult.success) {
         console.log(`[Withdrawal] Consensus reached for withdrawal ${txHash.slice(0, 18)}...`);
-        markProcessed = true;
         await executeWithdrawalWithCascade(node, withdrawal);
       } else {
         console.log(
@@ -399,7 +404,6 @@ async function handleBurnEvent(node, event) {
         e.message || String(e),
       );
     }
-    if (markProcessed) markWithdrawalProcessedInMemory(node, key);
   } catch (e) {
     console.log('[Withdrawal] Error handling burn event:', e.message || String(e));
   }
@@ -439,6 +443,137 @@ function getCanonicalSignerSet(node) {
 function getWithdrawalShortHash(txHash) {
   if (!txHash) return '';
   return String(txHash).slice(0, 18);
+}
+
+async function getHealthyClusterMembers(node) {
+  if (!node || !node.p2p || !Array.isArray(node._clusterMembers) || node._clusterMembers.length === 0) return [];
+  const clusterId = node._activeClusterId;
+  const sessionId = node._sessionId || 'bridge';
+  const members = node._clusterMembers.map((a) => String(a || '').toLowerCase());
+  const seen = new Set();
+  const self = node.wallet && node.wallet.address ? String(node.wallet.address).toLowerCase() : null;
+  if (self && members.includes(self)) seen.add(self);
+
+  const collectFromRound = async (round, extractAddress) => {
+    try {
+      const payloads = await node.p2p.getPeerPayloads(clusterId, sessionId, round, node._clusterMembers);
+      if (payloads && payloads.length > 0) {
+        for (const raw of payloads) {
+          try {
+            const data = JSON.parse(raw);
+            const addr = extractAddress(data);
+            if (addr) {
+              const lc = String(addr).toLowerCase();
+              if (members.includes(lc)) seen.add(lc);
+            }
+          } catch (_ignored) {}
+        }
+      }
+    } catch (_ignored) {}
+  };
+
+  await collectFromRound(
+    MULTISIG_SYNC_ROUND,
+    (data) => (data && data.type === 'multisig-info' && data.sender ? data.sender : null),
+  );
+  await collectFromRound(
+    9899,
+    (data) => (data && data.type === 'withdrawal-claim' && data.claimer ? data.claimer : null),
+  );
+
+  const healthy = [];
+  for (const addr of node._clusterMembers) {
+    const lc = String(addr || '').toLowerCase();
+    if (seen.has(lc)) healthy.push(addr);
+  }
+  return healthy;
+}
+
+function isRetriableWithdrawal(pending) {
+  if (!pending) return false;
+  const status = String(pending.status || '');
+  const err = String(pending.error || '');
+  if (status === 'completed' || status === 'pending') return false;
+  if (status === 'signing_failed' || status === 'sign_failed') return true;
+  if (err === 'tx_pbft_error' || err === 'tx_pbft_failed') return true;
+  if (err.startsWith('multisig_sync_failed:')) return true;
+  if (!err && (status === 'failed' || status === 'submit_failed' || status === 'error')) return true;
+  return false;
+}
+
+function buildWithdrawalFromPending(key, data) {
+  const txHash = data.txHash || key;
+  let xmrAmountAtomic = data.xmrAmountAtomic;
+  if (typeof xmrAmountAtomic === 'string') {
+    try { xmrAmountAtomic = BigInt(xmrAmountAtomic); } catch (_ignored) { xmrAmountAtomic = 0n; }
+  }
+  if (typeof xmrAmountAtomic !== 'bigint') {
+    try { xmrAmountAtomic = BigInt(data.xmrAmount || '0'); } catch (_ignored) { xmrAmountAtomic = 0n; }
+  }
+  const xmrAmountStr = typeof data.xmrAmount === 'string' ? data.xmrAmount : xmrAmountAtomic.toString();
+  return {
+    txHash,
+    user: data.user,
+    xmrAddress: data.xmrAddress,
+    zxmrAmount: data.zxmrAmount || xmrAmountStr,
+    xmrAmount: xmrAmountStr,
+    xmrAmountAtomic,
+    blockNumber: data.blockNumber,
+    timestamp: data.timestamp || data.startedAt || Date.now(),
+  };
+}
+
+function tickPendingWithdrawals(node) {
+  if (!node || !node._pendingWithdrawals || node._pendingWithdrawals.size === 0) return;
+  const now = Date.now();
+  for (const [key, data] of node._pendingWithdrawals) {
+    if (!data) continue;
+    if (data.status === 'completed') {
+      markWithdrawalProcessedInMemory(node, key);
+      node._pendingWithdrawals.delete(key);
+      continue;
+    }
+    const started = typeof data.startedAt === 'number' ? data.startedAt : now;
+    if (typeof data.firstAttemptAt !== 'number') {
+      data.firstAttemptAt = started;
+    }
+    const ageMs = now - data.firstAttemptAt;
+    if (ageMs > WITHDRAWAL_MAX_RETRY_WINDOW_MS) {
+      if (!data.permanentFailure) {
+        data.permanentFailure = true;
+        if (!data.error) data.error = 'withdrawal_failed_after_retry_window';
+        if (!data.status || data.status === 'pending') data.status = 'failed_permanent';
+        console.log(
+          `[Withdrawal] Giving up on withdrawal ${key.slice(0, 18)} after ${Math.floor(
+            ageMs / 1000,
+          )}s; marking permanently failed`,
+        );
+      }
+      markWithdrawalProcessedInMemory(node, key);
+      continue;
+    }
+    if (!isRetriableWithdrawal(data)) continue;
+    if (data.retryInProgress) continue;
+    const last = typeof data.lastAttemptAt === 'number' ? data.lastAttemptAt : started;
+    if (now - last < WITHDRAWAL_RETRY_INTERVAL_MS) continue;
+    const withdrawal = buildWithdrawalFromPending(key, data);
+    data.retryInProgress = true;
+    data.lastAttemptAt = now;
+    (async () => {
+      try {
+        await executeWithdrawalWithCascade(node, withdrawal);
+      } catch (e) {
+        console.log(
+          '[Withdrawal] Retry execution error for withdrawal',
+          key.slice(0, 18),
+          e.message || String(e),
+        );
+      } finally {
+        const current = node._pendingWithdrawals && node._pendingWithdrawals.get(key);
+        if (current) current.retryInProgress = false;
+      }
+    })();
+  }
 }
 
 async function runMultisigInfoSync(node) {
@@ -643,7 +778,14 @@ async function executeWithdrawal(node, withdrawal) {
   console.log(`  Amount: ${Number(withdrawal.xmrAmount) / 1e12} XMR`);
   node._pendingWithdrawals = node._pendingWithdrawals || new Map();
   const key = withdrawal.txHash.toLowerCase();
-  node._pendingWithdrawals.set(key, { ...withdrawal, status: 'pending', startedAt: Date.now() });
+  const existing = node._pendingWithdrawals.get(key);
+  const firstAttemptAt =
+    existing && typeof existing.firstAttemptAt === 'number'
+      ? existing.firstAttemptAt
+      : existing && typeof existing.startedAt === 'number'
+        ? existing.startedAt
+        : Date.now();
+  node._pendingWithdrawals.set(key, { ...withdrawal, status: 'pending', startedAt: Date.now(), firstAttemptAt });
   const pending0 = node._pendingWithdrawals.get(key);
   if (pending0) {
     pending0.signerSet = null;
@@ -707,31 +849,82 @@ async function executeWithdrawal(node, withdrawal) {
       const shortEth = getWithdrawalShortHash(withdrawal.txHash);
       const txPbftTimeoutMs = Number(process.env.WITHDRAWAL_TX_PBFT_TIMEOUT_MS || process.env.WITHDRAWAL_SIGN_TIMEOUT_MS || 300000);
       let txConsensus = null;
+      let pbftError = null;
       try {
-        txConsensus = await node.p2p.runConsensus(clusterId, sessionId, `withdrawal-tx-${shortEth}`, unsignedHash, node._clusterMembers, txPbftTimeoutMs);
+        txConsensus = await node.p2p.runConsensus(
+          clusterId,
+          sessionId,
+          `withdrawal-tx-${shortEth}`,
+          unsignedHash,
+          node._clusterMembers,
+          txPbftTimeoutMs,
+        );
       } catch (err) {
-        console.log('[Withdrawal] PBFT error for unsigned tx:', err.message || String(err));
-        const pending = node._pendingWithdrawals.get(key);
-        if (pending) {
-          pending.status = 'failed';
-          pending.error = 'tx_pbft_error';
-        }
-        return;
+        pbftError = err;
       }
       if (!txConsensus || !txConsensus.success) {
-        console.log('[Withdrawal] PBFT consensus failed for unsigned tx');
+        const reason =
+          (txConsensus && txConsensus.reason) ||
+          (pbftError && (pbftError.message || String(pbftError))) ||
+          'unknown';
+        console.log(
+          '[Withdrawal] PBFT warning for unsigned tx (initial round failed, will continue with multisig signing):',
+          reason,
+        );
+        try {
+          const healthyMembers = await getHealthyClusterMembers(node);
+          const healthyCount = Array.isArray(healthyMembers) ? healthyMembers.length : 0;
+          const totalMembers = Array.isArray(node._clusterMembers) ? node._clusterMembers.length : 0;
+          if (healthyCount >= REQUIRED_WITHDRAWAL_SIGNATURES) {
+            console.log(
+              `[Withdrawal] Retrying unsigned-tx PBFT with healthy subset ${healthyCount}/${totalMembers}...`,
+            );
+            try {
+              const retryConsensus = await node.p2p.runConsensus(
+                clusterId,
+                sessionId,
+                `withdrawal-tx-${shortEth}-retry`,
+                unsignedHash,
+                healthyMembers,
+                txPbftTimeoutMs,
+              );
+              if (retryConsensus && retryConsensus.success) {
+                console.log('[Withdrawal] Unsigned-tx PBFT retry succeeded with healthy subset');
+                const pending = node._pendingWithdrawals.get(key);
+                if (pending) {
+                  pending.signerSet = signerSet;
+                  pending.txDataHexUnsigned = txData.txDataHex;
+                  pending.pbftUnsignedHash = unsignedHash;
+                }
+              } else {
+                console.log(
+                  '[Withdrawal] Unsigned-tx PBFT retry failed or no consensus; continuing with multisig signing',
+                );
+              }
+            } catch (err2) {
+              console.log(
+                '[Withdrawal] PBFT warning for unsigned-tx retry (will continue with multisig signing):',
+                err2.message || String(err2),
+              );
+            }
+          } else {
+            console.log(
+              `[Withdrawal] Not enough healthy members for unsigned-tx PBFT retry (have=${healthyCount}, required=${REQUIRED_WITHDRAWAL_SIGNATURES})`,
+            );
+          }
+        } catch (err3) {
+          console.log(
+            '[Withdrawal] Failed to compute healthy members for unsigned-tx PBFT retry:',
+            err3.message || String(err3),
+          );
+        }
+      } else {
         const pending = node._pendingWithdrawals.get(key);
         if (pending) {
-          pending.status = 'failed';
-          pending.error = 'tx_pbft_failed';
+          pending.signerSet = signerSet;
+          pending.txDataHexUnsigned = txData.txDataHex;
+          pending.pbftUnsignedHash = unsignedHash;
         }
-        return;
-      }
-      const pending = node._pendingWithdrawals.get(key);
-      if (pending) {
-        pending.signerSet = signerSet;
-        pending.txDataHexUnsigned = txData.txDataHex;
-        pending.pbftUnsignedHash = unsignedHash;
       }
     } catch (e) {
       console.log('[Withdrawal] Failed to create transfer:', e.message || String(e));
@@ -864,6 +1057,7 @@ async function executeWithdrawal(node, withdrawal) {
       }
       const finalPending = node._pendingWithdrawals.get(key);
       if (finalPending && finalPending.status === 'completed') {
+        markWithdrawalProcessedInMemory(node, key);
         node._pendingWithdrawals.delete(key);
       }
     } catch (e) {
