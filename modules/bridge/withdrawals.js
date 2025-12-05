@@ -231,20 +231,24 @@ function setupMultisigSyncResponder(node) {
         const self = String(node.wallet.address).toLowerCase();
         const seen = node._seenMultisigSyncPayloads;
         const now = Date.now();
-        for (const [raw, ts] of seen) {
-          if (now - ts > MULTISIG_SYNC_SEEN_TTL_MS) seen.delete(raw);
+        for (const [sender, ts] of seen) {
+          if (now - ts > MULTISIG_SYNC_SEEN_TTL_MS) seen.delete(sender);
         }
         let shouldRespond = false;
         for (const raw of payloads) {
-          const ts = seen.get(raw);
-          if (ts && now - ts <= MULTISIG_SYNC_SEEN_TTL_MS) continue;
-          seen.set(raw, now);
+          let data;
           try {
-            const data = JSON.parse(raw);
-            if (data && data.type === 'multisig-info' && data.sender && String(data.sender).toLowerCase() !== self) {
-              shouldRespond = true;
-            }
-          } catch (_ignored) {}
+            data = JSON.parse(raw);
+          } catch (_ignored) {
+            continue;
+          }
+          if (!data || data.type !== 'multisig-info' || !data.sender) continue;
+          const senderLc = String(data.sender).toLowerCase();
+          if (!senderLc || senderLc === self) continue;
+          const ts = seen.get(senderLc);
+          if (ts && now - ts <= MULTISIG_SYNC_SEEN_TTL_MS) continue;
+          seen.set(senderLc, now);
+          shouldRespond = true;
         }
         if (shouldRespond) {
           try {
@@ -608,11 +612,20 @@ function recordLocalSignStepResponse(node, withdrawalTxHash, stepIndex, signer, 
 }
 
 function clearLocalSignStepCacheForWithdrawal(node, withdrawalTxHash) {
-  if (!node || !node._localSignStepResponses || !withdrawalTxHash) return;
+  if (!node || !withdrawalTxHash) return;
   const prefix = `${String(withdrawalTxHash || '').toLowerCase()}:`;
-  for (const k of node._localSignStepResponses.keys()) {
-    if (k.startsWith(prefix)) {
-      node._localSignStepResponses.delete(k);
+  if (node._localSignStepResponses) {
+    for (const k of node._localSignStepResponses.keys()) {
+      if (typeof k === 'string' && k.startsWith(prefix)) {
+        node._localSignStepResponses.delete(k);
+      }
+    }
+  }
+  if (node._handledSignSteps) {
+    for (const k of Array.from(node._handledSignSteps)) {
+      if (typeof k === 'string' && k.startsWith(prefix)) {
+        node._handledSignSteps.delete(k);
+      }
     }
   }
 }
