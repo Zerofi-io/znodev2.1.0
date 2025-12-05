@@ -425,16 +425,15 @@ async function runWithdrawalConsensus(node, withdrawal) {
 }
 
 function getWithdrawalTurnIndex(node) {
-  if (!node._clusterMembers || node._clusterMembers.length === 0) return -1;
-  const sorted = [...node._clusterMembers].map((a) => a.toLowerCase()).sort();
-  return sorted.indexOf(node.wallet.address.toLowerCase());
+  if (!node._clusterMembers || node._clusterMembers.length === 0 || !node.wallet || !node.wallet.address) return -1;
+  const self = String(node.wallet.address || '').toLowerCase();
+  const members = node._clusterMembers.map((a) => String(a || '').toLowerCase());
+  return members.indexOf(self);
 }
-
 
 function getCanonicalSignerSet(node) {
   if (!node._clusterMembers || node._clusterMembers.length === 0) return [];
-  const list = [...node._clusterMembers].map((a) => String(a || '').toLowerCase()).sort();
-  return list;
+  return node._clusterMembers.map((a) => String(a || '').toLowerCase());
 }
 
 function getWithdrawalShortHash(txHash) {
