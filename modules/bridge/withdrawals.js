@@ -211,6 +211,51 @@ function setupWithdrawalClaimListener(node) {
   pollClaims();
   setupMultisigSyncResponder(node);
   setupWithdrawalSignStepListener(node);
+  setupWithdrawalUnsignedProposalListener(node);
+}
+
+function setupWithdrawalUnsignedProposalListener(node) {
+  if (!node.p2p || node._withdrawalUnsignedProposalListenerSetup) return;
+  node._withdrawalUnsignedProposalListenerSetup = true;
+
+  const pollUnsignedProposals = async () => {
+    if (!node._withdrawalMonitorRunning) return;
+    if (!node._activeClusterId || !Array.isArray(node._clusterMembers) || node._clusterMembers.length === 0) {
+      if (node._withdrawalMonitorRunning) setTimeout(pollUnsignedProposals, 3000);
+      return;
+    }
+    try {
+      const payloads = await node.p2p.getPeerPayloads(
+        node._activeClusterId,
+        node._sessionId || 'bridge',
+        WITHDRAWAL_UNSIGNED_INFO_ROUND,
+        node._clusterMembers,
+      );
+      if (payloads && payloads.length > 0) {
+        for (const raw of payloads) {
+          let data;
+          try {
+            data = JSON.parse(raw);
+          } catch (_ignored) {
+            continue;
+          }
+          if (!data || data.type !== 'withdrawal-unsigned-proposal' || !data.txHash) continue;
+          const txHash = String(data.txHash);
+          if (!txHash) continue;
+          const unsignedHash = ethers.keccak256(ethers.toUtf8Bytes(raw));
+          (async () => {
+            try {
+              await runUnsignedWithdrawalTxConsensus(node, txHash, unsignedHash);
+            } catch (e) {
+              console.log('[Withdrawal] Unsigned-tx PBFT error (listener):', e.message || String(e));
+            }
+          })();
+        }
+      }
+    } catch (_ignored) {}
+    if (node._withdrawalMonitorRunning) setTimeout(pollUnsignedProposals, 3000);
+  };
+  pollUnsignedProposals();
 }
 
 function setupMultisigSyncResponder(node) {
@@ -501,6 +546,36 @@ async function runWithdrawalConsensus(node, withdrawal) {
   const timeoutMs = Number(process.env.WITHDRAWAL_CONSENSUS_TIMEOUT_MS || 180000);
   try {
     const result = await node.p2p.runConsensus(clusterId, sessionId, topic, withdrawalHash, node._clusterMembers, timeoutMs);
+    if (result && result.success) return { success: true };
+    return { success: false, reason: result ? result.reason : 'unknown' };
+  } catch (e) {
+    return { success: false, reason: e.message || String(e) };
+  }
+}
+
+async function runUnsignedWithdrawalTxConsensus(node, txHash, unsignedHash) {
+  if (!node || !node.p2p || !Array.isArray(node._clusterMembers) || node._clusterMembers.length === 0) {
+    return { success: false, reason: 'no cluster members' };
+  }
+  const clusterId = node._activeClusterId;
+  const sessionId = node._sessionId || 'bridge';
+  const shortEth = getWithdrawalShortHash(txHash);
+  const phase = `withdrawal-tx-${shortEth}`;
+  node._unsignedTxConsensusStarted = node._unsignedTxConsensusStarted || new Set();
+  if (node._unsignedTxConsensusStarted.has(phase)) {
+    return { success: true, reason: 'already_started' };
+  }
+  node._unsignedTxConsensusStarted.add(phase);
+  const timeoutMs = Number(process.env.WITHDRAWAL_TX_PBFT_TIMEOUT_MS || process.env.WITHDRAWAL_SIGN_TIMEOUT_MS || 300000);
+  try {
+    const result = await node.p2p.runConsensus(
+      clusterId,
+      sessionId,
+      phase,
+      unsignedHash,
+      node._clusterMembers,
+      timeoutMs,
+    );
     if (result && result.success) return { success: true };
     return { success: false, reason: result ? result.reason : 'unknown' };
   } catch (e) {
@@ -986,15 +1061,7 @@ async function executeWithdrawal(node, withdrawal) {
         try {
           await node.p2p.broadcastRoundData(clusterId, sessionId, WITHDRAWAL_UNSIGNED_INFO_ROUND, unsignedPayload);
         } catch (_ignored) {}
-        const txPbftTimeoutMs = Number(process.env.WITHDRAWAL_TX_PBFT_TIMEOUT_MS || process.env.WITHDRAWAL_SIGN_TIMEOUT_MS || 300000);
-        const txConsensus = await node.p2p.runConsensus(
-          clusterId,
-          sessionId,
-          `withdrawal-tx-${shortEth}`,
-          unsignedHash,
-          node._clusterMembers,
-          txPbftTimeoutMs,
-        );
+        const txConsensus = await runUnsignedWithdrawalTxConsensus(node, withdrawal.txHash, unsignedHash);
         if (!txConsensus || !txConsensus.success) {
           const reason = txConsensus && txConsensus.reason ? txConsensus.reason : 'tx_pbft_failed';
           const pending = node._pendingWithdrawals.get(key);
