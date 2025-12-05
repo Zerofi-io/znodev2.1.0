@@ -113,11 +113,38 @@ function cleanupOldProcessedDeposits(node) {
   }
 }
 
+function cleanupOldPendingWithdrawals(node) {
+  if (!node._pendingWithdrawals || node._pendingWithdrawals.size === 0) return;
+  const ttlMs = Number(process.env.PENDING_WITHDRAWAL_TTL_MS || 86400000);
+  const now = Date.now();
+  let pruned = 0;
+  for (const [key, data] of node._pendingWithdrawals) {
+    if (!data) continue;
+    const status = String(data.status || '');
+    const permanent = !!data.permanentFailure || status === 'failed_permanent';
+    if (!permanent) continue;
+    let started = null;
+    if (typeof data.firstAttemptAt === 'number') started = data.firstAttemptAt;
+    else if (typeof data.startedAt === 'number') started = data.startedAt;
+    else if (typeof data.timestamp === 'number') started = data.timestamp;
+    if (!started) continue;
+    if (now - started > ttlMs) {
+      node._pendingWithdrawals.delete(key);
+      pruned += 1;
+    }
+  }
+  if (pruned > 0) {
+    console.log(`[Bridge] Pruned ${pruned} old pending withdrawal entries`);
+    saveBridgeState(node);
+  }
+}
+
 export function startCleanupTimer(node) {
   const cleanupIntervalMs = Number(process.env.BRIDGE_CLEANUP_INTERVAL_MS || 3600000);
   if (node._bridgeCleanupTimer) clearInterval(node._bridgeCleanupTimer);
   node._bridgeCleanupTimer = setInterval(() => {
     cleanupExpiredSignatures(node);
     cleanupOldProcessedDeposits(node);
+    cleanupOldPendingWithdrawals(node);
   }, cleanupIntervalMs);
 }

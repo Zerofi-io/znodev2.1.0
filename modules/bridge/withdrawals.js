@@ -58,9 +58,12 @@ const WITHDRAWAL_CASCADE_INTERVAL_MS = Number(process.env.WITHDRAWAL_CASCADE_INT
 const REQUIRED_WITHDRAWAL_SIGNATURES = 7;
 const MULTISIG_SYNC_ROUND = Number(process.env.MULTISIG_SYNC_ROUND || 9800);
 const MULTISIG_SYNC_TIMEOUT_MS = Number(process.env.MULTISIG_SYNC_TIMEOUT_MS || 180000);
+const MULTISIG_SYNC_SEEN_TTL_MS = Number(process.env.MULTISIG_SYNC_SEEN_TTL_MS || 3600000);
 const WITHDRAWAL_SIGN_STEP_TIMEOUT_MS = Number(process.env.WITHDRAWAL_SIGN_STEP_TIMEOUT_MS || 20000);
 const WITHDRAWAL_MAX_RETRY_WINDOW_MS = Number(process.env.WITHDRAWAL_MAX_RETRY_WINDOW_MS || 600000);
 const WITHDRAWAL_RETRY_INTERVAL_MS = Number(process.env.WITHDRAWAL_RETRY_INTERVAL_MS || 30000);
+const WITHDRAWAL_UNSIGNED_INFO_ROUND = Number(process.env.WITHDRAWAL_UNSIGNED_INFO_ROUND || 9898);
+const WITHDRAWAL_UNSIGNED_INFO_TTL_MS = Number(process.env.WITHDRAWAL_UNSIGNED_INFO_TTL_MS || 86400000);
 
 const WITHDRAWAL_PROCESSED_STORE_PATH = path.join(__dirname, '.withdrawals-processed.json');
 let _processedWithdrawalsStore = null;
@@ -209,12 +212,13 @@ function setupWithdrawalClaimListener(node) {
   pollClaims();
   setupMultisigSyncResponder(node);
   setupWithdrawalSignStepListener(node);
+  setupWithdrawalUnsignedInfoListener(node);
 }
 
 function setupMultisigSyncResponder(node) {
   if (!node.p2p || node._multisigSyncResponderSetup) return;
   node._multisigSyncResponderSetup = true;
-  node._lastMultisigSyncBroadcast = 0;
+  node._seenMultisigSyncPayloads = node._seenMultisigSyncPayloads || new Map();
 
   const pollMultisigSync = async () => {
     if (!node._withdrawalMonitorRunning) return;
@@ -225,20 +229,26 @@ function setupMultisigSyncResponder(node) {
         MULTISIG_SYNC_ROUND,
         node._clusterMembers,
       );
-      if (payloads && payloads.length > 0) {
-        let hasOtherNodeRequest = false;
+      if (payloads && payloads.length > 0 && node.wallet && node.wallet.address && node.monero) {
+        const self = String(node.wallet.address).toLowerCase();
+        const seen = node._seenMultisigSyncPayloads;
+        const now = Date.now();
+        for (const [raw, ts] of seen) {
+          if (now - ts > MULTISIG_SYNC_SEEN_TTL_MS) seen.delete(raw);
+        }
+        let shouldRespond = false;
         for (const raw of payloads) {
+          const ts = seen.get(raw);
+          if (ts && now - ts <= MULTISIG_SYNC_SEEN_TTL_MS) continue;
+          seen.set(raw, now);
           try {
             const data = JSON.parse(raw);
-            if (data.type === 'multisig-info' && data.sender && data.sender.toLowerCase() !== node.wallet.address.toLowerCase()) {
-              hasOtherNodeRequest = true;
-              break;
+            if (data && data.type === 'multisig-info' && data.sender && String(data.sender).toLowerCase() !== self) {
+              shouldRespond = true;
             }
           } catch (_ignored) {}
         }
-        const now = Date.now();
-        const alreadyBroadcast = node._lastMultisigSyncBroadcast && (now - node._lastMultisigSyncBroadcast) < 30000;
-        if (hasOtherNodeRequest && !alreadyBroadcast && node.monero) {
+        if (shouldRespond) {
           try {
             const localInfo = await node.monero.exportMultisigInfo();
             const payload = JSON.stringify({
@@ -247,8 +257,12 @@ function setupMultisigSyncResponder(node) {
               info: localInfo,
               sender: node.wallet.address,
             });
-            await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', MULTISIG_SYNC_ROUND, payload);
-            node._lastMultisigSyncBroadcast = now;
+            await node.p2p.broadcastRoundData(
+              node._activeClusterId,
+              node._sessionId || 'bridge',
+              MULTISIG_SYNC_ROUND,
+              payload,
+            );
             console.log('[MultisigSync] Responded to multisig sync request from peer');
           } catch (e) {
             console.log('[MultisigSync] Failed to respond to sync request:', e.message || String(e));
@@ -370,6 +384,7 @@ function setupWithdrawalSignStepListener(node) {
             try {
               await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', 9901, response);
             } catch (_ignored) {}
+            recordLocalSignStepResponse(node, data.withdrawalTxHash, idx, node.wallet.address, signedTx.txDataHex);
             node._handledSignSteps.add(key);
           } catch (_ignored) {}
         }
@@ -431,6 +446,8 @@ async function handleBurnEvent(node, event) {
       console.log(
         `[Withdrawal] Burn event clusterId mismatch (event=${clusterIdFromEvent}, local=${activeClusterId}), skipping`,
       );
+
+      markWithdrawalProcessedInMemory(node, key);
       return;
     }
     if (!isValidMoneroAddress(xmrAddress)) {
@@ -584,12 +601,99 @@ function buildWithdrawalFromPending(key, data) {
   };
 }
 
+function recordLocalSignStepResponse(node, withdrawalTxHash, stepIndex, signer, txDataHex) {
+  if (!node) return;
+  const k = `${String(withdrawalTxHash || '').toLowerCase()}:${Number(stepIndex)}`;
+  if (!k) return;
+  if (!node._localSignStepResponses) node._localSignStepResponses = new Map();
+  node._localSignStepResponses.set(k, { signer, txDataHex, timestamp: Date.now() });
+}
+
+function clearLocalSignStepCacheForWithdrawal(node, withdrawalTxHash) {
+  if (!node || !node._localSignStepResponses || !withdrawalTxHash) return;
+  const prefix = `${String(withdrawalTxHash || '').toLowerCase()}:`;
+  for (const k of node._localSignStepResponses.keys()) {
+    if (k.startsWith(prefix)) {
+      node._localSignStepResponses.delete(k);
+    }
+  }
+}
+
+async function broadcastUnsignedInfoIfNeeded(node, key) {
+  if (!node || !node.p2p || !node._pendingWithdrawals) return;
+  const pending = node._pendingWithdrawals.get(key);
+  if (!pending || !pending.pbftUnsignedHash || !pending.txDataHexUnsigned) return;
+  const clusterId = node._activeClusterId;
+  if (!clusterId) return;
+  const sessionId = node._sessionId || 'bridge';
+  const txHash = pending.txHash || key;
+  try {
+    const payload = JSON.stringify({
+      type: 'withdrawal-unsigned-info',
+      txHash,
+      pbftUnsignedHash: pending.pbftUnsignedHash,
+      signerSet: Array.isArray(pending.signerSet) ? pending.signerSet : null,
+      txDataHexHash: ethers.keccak256(ethers.toUtf8Bytes(pending.txDataHexUnsigned)),
+    });
+    await node.p2p.broadcastRoundData(clusterId, sessionId, WITHDRAWAL_UNSIGNED_INFO_ROUND, payload);
+  } catch (_ignored) {}
+}
+
+function setupWithdrawalUnsignedInfoListener(node) {
+  if (!node.p2p || node._withdrawalUnsignedInfoListenerSetup) return;
+  node._withdrawalUnsignedInfoListenerSetup = true;
+  node._seenWithdrawalUnsignedInfoPayloads = node._seenWithdrawalUnsignedInfoPayloads || new Map();
+
+  const pollUnsignedInfo = async () => {
+    if (!node._withdrawalMonitorRunning) return;
+    try {
+      const payloads = await node.p2p.getPeerPayloads(
+        node._activeClusterId,
+        node._sessionId || 'bridge',
+        WITHDRAWAL_UNSIGNED_INFO_ROUND,
+        node._clusterMembers,
+      );
+      if (payloads && payloads.length > 0) {
+        const now = Date.now();
+        const seen = node._seenWithdrawalUnsignedInfoPayloads;
+        for (const [raw, ts] of seen) {
+          if (now - ts > WITHDRAWAL_UNSIGNED_INFO_TTL_MS) seen.delete(raw);
+        }
+        node._pendingWithdrawals = node._pendingWithdrawals || new Map();
+        for (const raw of payloads) {
+          const ts = seen.get(raw);
+          if (ts && now - ts <= WITHDRAWAL_UNSIGNED_INFO_TTL_MS) continue;
+          seen.set(raw, now);
+          let data;
+          try { data = JSON.parse(raw); } catch (_ignored) { continue; }
+          if (!data || data.type !== 'withdrawal-unsigned-info' || !data.txHash || !data.pbftUnsignedHash) continue;
+          const key = String(data.txHash).toLowerCase();
+          if (!key) continue;
+          let pending = node._pendingWithdrawals.get(key);
+          if (!pending) {
+            pending = { txHash: data.txHash, status: 'unknown', timestamp: Date.now() };
+            node._pendingWithdrawals.set(key, pending);
+          }
+          if (!pending.pbftUnsignedHash) pending.pbftUnsignedHash = data.pbftUnsignedHash;
+          if (data.signerSet && !pending.signerSet) pending.signerSet = data.signerSet;
+          if (data.txDataHexHash && !pending.txDataHexUnsignedHash) pending.txDataHexUnsignedHash = data.txDataHexHash;
+        }
+      }
+    } catch (_ignored) {}
+    if (node._withdrawalMonitorRunning) setTimeout(pollUnsignedInfo, 5000);
+  };
+  pollUnsignedInfo();
+}
+
+
+
 function tickPendingWithdrawals(node) {
   if (!node || !node._pendingWithdrawals || node._pendingWithdrawals.size === 0) return;
   const now = Date.now();
   for (const [key, data] of node._pendingWithdrawals) {
     if (!data) continue;
     if (data.status === 'completed') {
+      clearLocalSignStepCacheForWithdrawal(node, key);
       markWithdrawalProcessedInMemory(node, key);
       node._pendingWithdrawals.delete(key);
       continue;
@@ -610,6 +714,7 @@ function tickPendingWithdrawals(node) {
           )}s; marking permanently failed`,
         );
       }
+      clearLocalSignStepCacheForWithdrawal(node, key);
       markWithdrawalProcessedInMemory(node, key);
       continue;
     }
@@ -770,7 +875,20 @@ async function waitForSignStepResponse(node, withdrawalTxHash, stepIndex, signer
   const key = String(withdrawalTxHash || '').toLowerCase();
   const signerLc = String(signer || '').toLowerCase();
   const start = Date.now();
+  const localKey = `${key}:${Number(stepIndex)}`;
+
   while (Date.now() - start < timeoutMs) {
+
+    if (node._localSignStepResponses && node._localSignStepResponses.has(localKey)) {
+      const cached = node._localSignStepResponses.get(localKey);
+      if (cached && cached.txDataHex && typeof cached.txDataHex === 'string' && cached.txDataHex.length) {
+        const s2 = cached.signer ? String(cached.signer).toLowerCase() : '';
+        if (!signerLc || !s2 || s2 === signerLc) {
+          return { txDataHex: cached.txDataHex };
+        }
+      }
+    }
+
     let payloads = [];
     try {
       payloads = await node.p2p.getPeerPayloads(
@@ -790,7 +908,7 @@ async function waitForSignStepResponse(node, withdrawalTxHash, stepIndex, signer
           const idx = Number(data.stepIndex);
           if (!Number.isFinite(idx) || idx !== stepIndex) continue;
           const s2 = data.signer ? String(data.signer).toLowerCase() : '';
-          if (!s2 || s2 !== signerLc) continue;
+          if (!s2 || (signerLc && s2 !== signerLc)) continue;
           if (!data.txDataHex || typeof data.txDataHex !== 'string' || !data.txDataHex.length) continue;
           return { txDataHex: data.txDataHex };
         } catch (_ignored) {}
@@ -839,6 +957,7 @@ async function executeWithdrawal(node, withdrawal) {
   console.log(`  Amount: ${Number(withdrawal.xmrAmount) / 1e12} XMR`);
   node._pendingWithdrawals = node._pendingWithdrawals || new Map();
   const key = withdrawal.txHash.toLowerCase();
+  clearLocalSignStepCacheForWithdrawal(node, key);
   const existing = node._pendingWithdrawals.get(key);
   const firstAttemptAt =
     existing && typeof existing.firstAttemptAt === 'number'
@@ -1116,8 +1235,10 @@ async function executeWithdrawal(node, withdrawal) {
         pending2.pbftSignedHash = signedHash;
         pending2.signedPbftSuccess = !!(signedConsensus && signedConsensus.success);
       }
+      await broadcastUnsignedInfoIfNeeded(node, key);
       const finalPending = node._pendingWithdrawals.get(key);
       if (finalPending && finalPending.status === 'completed') {
+        clearLocalSignStepCacheForWithdrawal(node, key);
         markWithdrawalProcessedInMemory(node, key);
         node._pendingWithdrawals.delete(key);
       }
