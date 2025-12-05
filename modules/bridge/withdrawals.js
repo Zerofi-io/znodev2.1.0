@@ -1027,85 +1027,26 @@ async function executeWithdrawal(node, withdrawal) {
       const clusterId = node._activeClusterId;
       const sessionId = node._sessionId || 'bridge';
       const shortEth = getWithdrawalShortHash(withdrawal.txHash);
-      const txPbftTimeoutMs = Number(process.env.WITHDRAWAL_TX_PBFT_TIMEOUT_MS || process.env.WITHDRAWAL_SIGN_TIMEOUT_MS || 300000);
-      let txConsensus = null;
-      let pbftError = null;
-      try {
-        txConsensus = await node.p2p.runConsensus(
-          clusterId,
-          sessionId,
-          `withdrawal-tx-${shortEth}`,
-          unsignedHash,
-          node._clusterMembers,
-          txPbftTimeoutMs,
-        );
-      } catch (err) {
-        pbftError = err;
+      const pendingUnsigned = node._pendingWithdrawals.get(key);
+      if (pendingUnsigned) {
+        pendingUnsigned.signerSet = signerSet;
+        pendingUnsigned.txDataHexUnsigned = txData.txDataHex;
+        pendingUnsigned.pbftUnsignedHash = unsignedHash;
       }
-      if (!txConsensus || !txConsensus.success) {
-        const reason =
-          (txConsensus && txConsensus.reason) ||
-          (pbftError && (pbftError.message || String(pbftError))) ||
-          'unknown';
-        console.log(
-          '[Withdrawal] PBFT warning for unsigned tx (initial round failed, will continue with multisig signing):',
-          reason,
-        );
+      (async () => {
         try {
-          const healthyMembers = await getHealthyClusterMembers(node);
-          const healthyCount = Array.isArray(healthyMembers) ? healthyMembers.length : 0;
-          const totalMembers = Array.isArray(node._clusterMembers) ? node._clusterMembers.length : 0;
-          if (healthyCount >= REQUIRED_WITHDRAWAL_SIGNATURES) {
-            console.log(
-              `[Withdrawal] Retrying unsigned-tx PBFT with healthy subset ${healthyCount}/${totalMembers}...`,
-            );
-            try {
-              const retryConsensus = await node.p2p.runConsensus(
-                clusterId,
-                sessionId,
-                `withdrawal-tx-${shortEth}-retry`,
-                unsignedHash,
-                healthyMembers,
-                txPbftTimeoutMs,
-              );
-              if (retryConsensus && retryConsensus.success) {
-                console.log('[Withdrawal] Unsigned-tx PBFT retry succeeded with healthy subset');
-                const pending = node._pendingWithdrawals.get(key);
-                if (pending) {
-                  pending.signerSet = signerSet;
-                  pending.txDataHexUnsigned = txData.txDataHex;
-                  pending.pbftUnsignedHash = unsignedHash;
-                }
-              } else {
-                console.log(
-                  '[Withdrawal] Unsigned-tx PBFT retry failed or no consensus; continuing with multisig signing',
-                );
-              }
-            } catch (err2) {
-              console.log(
-                '[Withdrawal] PBFT warning for unsigned-tx retry (will continue with multisig signing):',
-                err2.message || String(err2),
-              );
-            }
-          } else {
-            console.log(
-              `[Withdrawal] Not enough healthy members for unsigned-tx PBFT retry (have=${healthyCount}, required=${REQUIRED_WITHDRAWAL_SIGNATURES})`,
-            );
-          }
-        } catch (err3) {
-          console.log(
-            '[Withdrawal] Failed to compute healthy members for unsigned-tx PBFT retry:',
-            err3.message || String(err3),
+          await node.p2p.runConsensus(
+            clusterId,
+            sessionId,
+            `withdrawal-tx-${shortEth}`,
+            unsignedHash,
+            node._clusterMembers,
+            Number(process.env.WITHDRAWAL_TX_PBFT_TIMEOUT_MS || process.env.WITHDRAWAL_SIGN_TIMEOUT_MS || 300000),
           );
+        } catch (err) {
+          console.log('[Withdrawal] Unsigned-tx PBFT error (background):', err.message || String(err));
         }
-      } else {
-        const pending = node._pendingWithdrawals.get(key);
-        if (pending) {
-          pending.signerSet = signerSet;
-          pending.txDataHexUnsigned = txData.txDataHex;
-          pending.pbftUnsignedHash = unsignedHash;
-        }
-      }
+      })();
     } catch (e) {
       console.log('[Withdrawal] Failed to create transfer:', e.message || String(e));
       const pending = node._pendingWithdrawals.get(key);
