@@ -228,6 +228,7 @@ class MoneroRPC {
     return {
       balance: result.balance,
       unlockedBalance: result.unlocked_balance,
+      multisigImportNeeded: !!result.multisig_import_needed,
     };
   }
 
