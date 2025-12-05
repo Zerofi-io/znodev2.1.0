@@ -1,7 +1,11 @@
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { ethers } from 'ethers';
 import { isValidMoneroAddress } from './bridge-service.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 function normalizeEthersEvent(rawEvent) {
   if (!rawEvent) return null;
