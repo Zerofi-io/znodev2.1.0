@@ -1004,10 +1004,6 @@ async function runWithdrawalMultisigSync(node, withdrawalTxHash) {
   if (!node) return { success: false, reason: 'no_node' };
   const key = String(withdrawalTxHash || '').toLowerCase();
   if (!key) return { success: false, reason: 'no_tx_hash' };
-  node._withdrawalMultisigSynced = node._withdrawalMultisigSynced || new Set();
-  if (node._withdrawalMultisigSynced.has(key)) {
-    return { success: true, reason: 'already_synced' };
-  }
 
   const consensus = await runMultisigSyncConsensus(node, key, MULTISIG_SYNC_TIMEOUT_MS);
   if (!consensus || !consensus.success) {
@@ -1044,7 +1040,6 @@ async function runWithdrawalMultisigSync(node, withdrawalTxHash) {
     };
   }
 
-  node._withdrawalMultisigSynced.add(key);
   return {
     success: true,
     signerSet,
