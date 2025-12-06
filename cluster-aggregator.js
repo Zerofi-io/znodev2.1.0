@@ -208,11 +208,22 @@ async function aggregateClusters() {
     }
 
     const members = Array.isArray(cluster.members) ? cluster.members : [];
+    const normalizedMembers = [];
     let liveMembers = 0;
     for (const m of members) {
-      if (!m) continue;
-      const s = (m.status || '').toLowerCase();
+      if (!m || !m.address) continue;
+      // Prefer explicit inCluster flag from /cluster-status when available. If
+      // it is present and false, treat this address as having left the
+      // cluster even if it still sends heartbeats.
+      if (typeof m.inCluster === 'boolean' && !m.inCluster) continue;
+      const status = typeof m.status === 'string' ? m.status : null;
+      const s = (status || '').toLowerCase();
       if (s === 'healthy' || s === 'online') liveMembers += 1;
+      normalizedMembers.push({
+        address: m.address,
+        status,
+        isSelf: !!m.isSelf,
+      });
     }
 
     let entry = clusters.get(clusterId);
@@ -220,13 +231,42 @@ async function aggregateClusters() {
       entry = {
         id: clusterId,
         finalAddress: cluster.finalAddress || null,
-        size: typeof cluster.size === 'number' ? cluster.size : null,
+        size:
+          typeof cluster.size === 'number'
+            ? cluster.size
+            : normalizedMembers.length > 0
+              ? normalizedMembers.length
+              : null,
         eligibleNodes: 0,
         totalNodes: 0,
         liveMembers: 0,
         nodes: [],
+        members: [],
       };
       clusters.set(clusterId, entry);
+    }
+
+    // Merge members from this node's view into the aggregated entry.
+    if (normalizedMembers.length > 0) {
+      if (!Array.isArray(entry.members)) entry.members = [];
+      const existingByAddr = new Map();
+      for (const m of entry.members) {
+        if (!m || !m.address) continue;
+        existingByAddr.set(m.address.toLowerCase(), m);
+      }
+      for (const m of normalizedMembers) {
+        const key = m.address.toLowerCase();
+        const existing = existingByAddr.get(key);
+        if (!existing) {
+          entry.members.push(m);
+          existingByAddr.set(key, m);
+        } else if (!existing.status && m.status) {
+          existing.status = m.status;
+        }
+      }
+      if (!entry.size && typeof cluster.size !== 'number' && entry.members.length > 0) {
+        entry.size = entry.members.length;
+      }
     }
 
     entry.totalNodes += 1;

@@ -438,6 +438,34 @@ async function getClusterStatus(node) {
   const hbParsed = hbRaw != null ? Number(hbRaw) : NaN;
   const hbIntervalSec = Number.isFinite(hbParsed) && hbParsed > 0 ? hbParsed : 30;
   const staleThresholdSec = hbIntervalSec * 5;
+
+  // Simple in-memory cache for on-chain cluster membership per address to avoid
+  // hammering the registry on every /cluster-status call.
+  const cacheTtlMsRaw = process.env.MEMBER_CLUSTER_CACHE_TTL_MS;
+  const cacheTtlMsParsed = cacheTtlMsRaw != null ? Number(cacheTtlMsRaw) : NaN;
+  const cacheTtlMs = Number.isFinite(cacheTtlMsParsed) && cacheTtlMsParsed > 0 ? cacheTtlMsParsed : 300000; // 5 minutes
+  if (!node._memberClusterCache) {
+    node._memberClusterCache = new Map();
+  }
+
+  async function getOnChainClusterId(addr) {
+    if (!node.registry || !node.registry.nodeToCluster) return null;
+    try {
+      const key = String(addr || '').toLowerCase();
+      const nowMs = Date.now();
+      const cached = node._memberClusterCache.get(key);
+      if (cached && typeof cached.ts === 'number' && nowMs - cached.ts < cacheTtlMs) {
+        return cached.clusterId || null;
+      }
+      const cid = await node.registry.nodeToCluster(addr);
+      const cidStr = cid != null ? String(cid) : null;
+      node._memberClusterCache.set(key, { clusterId: cidStr, ts: nowMs });
+      return cidStr;
+    } catch (_ignored) {
+      return null;
+    }
+  }
+
   for (const addr of membersRaw) {
     let lastHeartbeatAgoSec = null;
     let status = 'unknown';
@@ -454,7 +482,18 @@ async function getClusterStatus(node) {
         }
       } catch (_ignored) {}
     }
-    members.push({ address: addr, isSelf: selfAddr ? addr.toLowerCase() === selfAddr : false, lastHeartbeatAgoSec, status });
+
+    const onChainClusterId = await getOnChainClusterId(addr);
+    const inCluster = !!clusterId && onChainClusterId && String(onChainClusterId).toLowerCase() === String(clusterId).toLowerCase();
+
+    members.push({
+      address: addr,
+      isSelf: selfAddr ? addr.toLowerCase() === selfAddr : false,
+      lastHeartbeatAgoSec,
+      status,
+      onChainClusterId,
+      inCluster,
+    });
   }
   const cooldownUntil = (clusterState && clusterState.cooldownUntil) || node._clusterCooldownUntil || null;
   const cooldownRemainingSec = cooldownUntil && cooldownUntil > now ? Math.floor((cooldownUntil - now) / 1000) : 0;
