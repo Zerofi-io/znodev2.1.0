@@ -95,8 +95,20 @@ export function stopBridgeAPI(node) {
 }
 
 function jsonResponse(res, status, data) {
+  if (res.headersSent) {
+    try { res.end(); } catch (_ignored) {}
+    return;
+  }
+  let body;
+  try {
+    body = JSON.stringify(data, (key, value) => (typeof value === 'bigint' ? value.toString() : value));
+  } catch (e) {
+    console.log('[BridgeAPI] Failed to serialize JSON response:', e.message || String(e));
+    status = 500;
+    body = JSON.stringify({ error: 'Internal server error' });
+  }
   res.writeHead(status, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(data));
+  res.end(body);
 }
 
 function isBridgeReadyForDeposit(node) {
@@ -418,6 +430,10 @@ async function handleAPIRequest(node, req, res, pathname, params, rateLimitWindo
     return jsonResponse(res, 404, { error: 'Not found' });
   } catch (e) {
     console.log('[BridgeAPI] Request error:', e.message || String(e));
+    if (res.headersSent) {
+      try { res.end(); } catch (_ignored) {}
+      return;
+    }
     return jsonResponse(res, 500, { error: 'Internal server error' });
   }
 }
