@@ -35,6 +35,7 @@ var (
 	PrePrepareTimeout = getEnvDuration("PBFT_PREPREPARE_TIMEOUT_MS", 30000)
 	PrepareTimeout    = getEnvDuration("PBFT_PREPARE_TIMEOUT_MS", 60000)
 	CommitTimeout     = getEnvDuration("PBFT_COMMIT_TIMEOUT_MS", 60000)
+	clusterThreshold  = getEnvInt("CLUSTER_THRESHOLD", 0)
 )
 
 func getEnvDuration(key string, defaultMs int) time.Duration {
@@ -44,6 +45,15 @@ func getEnvDuration(key string, defaultMs int) time.Duration {
 		}
 	}
 	return time.Duration(defaultMs) * time.Millisecond
+}
+
+func getEnvInt(key string, def int) int {
+	if val := os.Getenv(key); val != "" {
+		if v, err := strconv.Atoi(val); err == nil {
+			return v
+		}
+	}
+	return def
 }
 
 // PBFTMessage represents a PBFT protocol message
@@ -162,8 +172,13 @@ func pbftQuorum(n int) int {
 	if n <= 0 {
 		return 0
 	}
-	f := pbftFaultTolerance(n)
-	q := 2*f + 1
+	var q int
+	if clusterThreshold > 0 && clusterThreshold <= n {
+		q = clusterThreshold
+	} else {
+		f := pbftFaultTolerance(n)
+		q = 2*f + 1
+	}
 	if q < 1 {
 		q = 1
 	}
