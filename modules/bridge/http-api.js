@@ -449,9 +449,15 @@ async function getClusterStatus(node) {
   }
 
   async function getOnChainClusterId(addr) {
+    if (!clusterId) return null;
+    const key = String(addr || '').toLowerCase();
+    const isSelf = !!(selfAddr && key === selfAddr);
+    // For non-self members, trust the local clusterId without hitting the registry.
+    if (!isSelf) {
+      return String(clusterId);
+    }
     if (!node.registry || !node.registry.nodeToCluster) return null;
     try {
-      const key = String(addr || '').toLowerCase();
       const nowMs = Date.now();
       const cached = node._memberClusterCache.get(key);
       if (cached && typeof cached.ts === 'number' && nowMs - cached.ts < cacheTtlMs) {
@@ -466,7 +472,7 @@ async function getClusterStatus(node) {
     }
   }
 
-  for (const addr of membersRaw) {
+  const memberPromises = membersRaw.map(async (addr) => {
     let lastHeartbeatAgoSec = null;
     let status = 'unknown';
     if (node.p2p && typeof node.p2p.getLastHeartbeat === 'function') {
@@ -484,17 +490,23 @@ async function getClusterStatus(node) {
     }
 
     const onChainClusterId = await getOnChainClusterId(addr);
-    const inCluster = !!clusterId && onChainClusterId && String(onChainClusterId).toLowerCase() === String(clusterId).toLowerCase();
+    const key = String(addr || '').toLowerCase();
+    const isSelf = !!(selfAddr && key === selfAddr);
+    const inCluster = isSelf
+      ? (!!clusterId && onChainClusterId && String(onChainClusterId).toLowerCase() === String(clusterId).toLowerCase())
+      : !!clusterId;
 
-    members.push({
+    return {
       address: addr,
       isSelf: selfAddr ? addr.toLowerCase() === selfAddr : false,
       lastHeartbeatAgoSec,
       status,
       onChainClusterId,
       inCluster,
-    });
-  }
+    };
+  });
+
+  const members = await Promise.all(memberPromises);
   const cooldownUntil = (clusterState && clusterState.cooldownUntil) || node._clusterCooldownUntil || null;
   const cooldownRemainingSec = cooldownUntil && cooldownUntil > now ? Math.floor((cooldownUntil - now) / 1000) : 0;
   const lastFailureAt = (clusterState && clusterState.lastFailureAt) || node._lastClusterFailureAt || null;
