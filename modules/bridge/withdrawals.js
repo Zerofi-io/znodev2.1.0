@@ -417,6 +417,22 @@ function setupWithdrawalSignStepListener(node) {
             const key = `${String(data.withdrawalTxHash).toLowerCase()}:${idx}`;
             if (node._handledSignSteps.has(key)) continue;
 
+            // Ensure we have a fresh, per-withdrawal multisig sync on this node before signing.
+            try {
+              const syncBeforeSign = await runWithdrawalMultisigSync(node, data.withdrawalTxHash);
+              if (!syncBeforeSign || !syncBeforeSign.success) {
+                console.log(
+                  '[Withdrawal] Multisig sync before sign-step handling failed:',
+                  syncBeforeSign && syncBeforeSign.reason ? syncBeforeSign.reason : 'unknown',
+                );
+              }
+            } catch (e) {
+              console.log(
+                '[Withdrawal] Multisig sync before sign-step handling error:',
+                e.message || String(e),
+              );
+            }
+
             let signedTx;
             try {
               signedTx = await node.monero.signMultisig(data.txDataHex);
@@ -792,12 +808,17 @@ async function runMultisigInfoSync(node) {
     console.log(
       `[MultisigSync] Cluster has too few members for required withdrawal signatures: total=${totalMembers}, required=${minSigners}`,
     );
+    const responders = new Set();
+    if (node.wallet && node.wallet.address) {
+      responders.add(node.wallet.address.toLowerCase());
+    }
     return {
       success: false,
       reason: 'cluster_too_small',
       importedOutputs: 0,
-      responderCount: 0,
+      responderCount: responders.size,
       totalMembers,
+      responders: Array.from(responders),
     };
   }
 
@@ -806,7 +827,11 @@ async function runMultisigInfoSync(node) {
     localInfo = await node.monero.exportMultisigInfo();
   } catch (e) {
     console.log('[MultisigSync] export_multisig_info failed:', e.message || String(e));
-    return { success: false, reason: 'export_failed' };
+    const responders = [];
+    if (node.wallet && node.wallet.address) {
+      responders.push(node.wallet.address.toLowerCase());
+    }
+    return { success: false, reason: 'export_failed', importedOutputs: 0, responderCount: responders.length, totalMembers, responders };
   }
 
   const selfAddress = node.wallet && node.wallet.address ? node.wallet.address.toLowerCase() : null;
@@ -875,13 +900,27 @@ async function runMultisigInfoSync(node) {
     console.log(
       `[MultisigSync] Not enough participants for multisig sync: responders=${responderCount}/${totalMembers}, required=${minSigners}`,
     );
-    return { success: false, reason: 'not_enough_participants', importedOutputs: 0, responderCount, totalMembers };
+    return {
+      success: false,
+      reason: 'not_enough_participants',
+      importedOutputs: 0,
+      responderCount,
+      totalMembers,
+      responders: Array.from(responders),
+    };
   }
 
   const infos = Array.from(seenInfosBySender.values());
   if (infos.length === 0) {
     console.log('[MultisigSync] No valid multisig info entries parsed from peer payloads');
-    return { success: false, reason: 'no_valid_infos', importedOutputs: 0, responderCount, totalMembers };
+    return {
+      success: false,
+      reason: 'no_valid_infos',
+      importedOutputs: 0,
+      responderCount,
+      totalMembers,
+      responders: Array.from(responders),
+    };
   }
 
   let importedOutputs = 0;
@@ -890,7 +929,14 @@ async function runMultisigInfoSync(node) {
     if (typeof n === 'number') importedOutputs = n;
   } catch (e) {
     console.log('[MultisigSync] import_multisig_info failed:', e.message || String(e));
-    return { success: false, reason: 'import_failed', importedOutputs: 0, responderCount, totalMembers };
+    return {
+      success: false,
+      reason: 'import_failed',
+      importedOutputs: 0,
+      responderCount,
+      totalMembers,
+      responders: Array.from(responders),
+    };
   }
 
   let finalBalance = null;
@@ -908,6 +954,7 @@ async function runMultisigInfoSync(node) {
       importedOutputs,
       responderCount,
       totalMembers,
+      responders: Array.from(responders),
     };
   }
 
@@ -916,6 +963,94 @@ async function runMultisigInfoSync(node) {
     importedOutputs,
     responderCount,
     totalMembers,
+    responders: Array.from(responders),
+  };
+}
+
+
+async function runMultisigSyncConsensus(node, withdrawalTxHash, timeoutMs) {
+  if (!node || !node.p2p || !node._activeClusterId || !Array.isArray(node._clusterMembers) || node._clusterMembers.length === 0) {
+    return { success: false, reason: 'no_cluster' };
+  }
+  const clusterId = node._activeClusterId;
+  const sessionId = node._sessionId || 'bridge';
+  const key = String(withdrawalTxHash || '').toLowerCase();
+  const shortEth = getWithdrawalShortHash(key);
+  const payload = JSON.stringify({
+    type: 'withdrawal-multisig-sync',
+    withdrawalTxHash: key,
+  });
+  const digest = ethers.keccak256(ethers.toUtf8Bytes(payload));
+  const phase = `withdrawal-ms-sync-${shortEth}`;
+  const msTimeout = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) ? timeoutMs : MULTISIG_SYNC_TIMEOUT_MS;
+  try {
+    const result = await node.p2p.runConsensus(
+      clusterId,
+      sessionId,
+      phase,
+      digest,
+      node._clusterMembers,
+      msTimeout,
+    );
+    if (result && result.success) return { success: true };
+    return { success: false, reason: result && result.reason ? result.reason : 'pbft_failed' };
+  } catch (e) {
+    console.log('[MultisigSync] PBFT error for multisig sync:', e.message || String(e));
+    return { success: false, reason: 'pbft_error' };
+  }
+}
+
+async function runWithdrawalMultisigSync(node, withdrawalTxHash) {
+  if (!node) return { success: false, reason: 'no_node' };
+  const key = String(withdrawalTxHash || '').toLowerCase();
+  if (!key) return { success: false, reason: 'no_tx_hash' };
+  node._withdrawalMultisigSynced = node._withdrawalMultisigSynced || new Set();
+  if (node._withdrawalMultisigSynced.has(key)) {
+    return { success: true, reason: 'already_synced' };
+  }
+
+  const consensus = await runMultisigSyncConsensus(node, key, MULTISIG_SYNC_TIMEOUT_MS);
+  if (!consensus || !consensus.success) {
+    return { success: false, reason: (consensus && consensus.reason) || 'multisig_sync_pbft_failed' };
+  }
+
+  const syncResult = await runMultisigInfoSync(node);
+  if (!syncResult || !syncResult.success) {
+    return { success: false, reason: (syncResult && syncResult.reason) || 'multisig_sync_failed' };
+  }
+
+  const respondersArr = Array.isArray(syncResult.responders) ? syncResult.responders : [];
+  const respondersLc = respondersArr
+    .map((a) => (a ? String(a).toLowerCase() : ''))
+    .filter((a) => a && typeof a === 'string');
+  const responderSet = new Set(respondersLc);
+  const members = Array.isArray(node._clusterMembers)
+    ? node._clusterMembers.map((a) => String(a || '').toLowerCase())
+    : [];
+  const signerSet = [];
+  for (const m of members) {
+    if (responderSet.has(m)) signerSet.push(m);
+  }
+
+  const minSigners = REQUIRED_WITHDRAWAL_SIGNATURES;
+  if (!signerSet.length || signerSet.length < minSigners) {
+    return {
+      success: false,
+      reason: 'not_enough_synced_signers',
+      signerSet,
+      importedOutputs: syncResult.importedOutputs || 0,
+      responderCount: syncResult.responderCount || signerSet.length,
+      totalMembers: syncResult.totalMembers || members.length,
+    };
+  }
+
+  node._withdrawalMultisigSynced.add(key);
+  return {
+    success: true,
+    signerSet,
+    importedOutputs: syncResult.importedOutputs || 0,
+    responderCount: syncResult.responderCount || signerSet.length,
+    totalMembers: syncResult.totalMembers || members.length,
   };
 }
 
@@ -1042,10 +1177,10 @@ async function executeWithdrawal(node, withdrawal) {
       pending0.pbftSignedHash = null;
     }
 
-    const syncResult = await runMultisigInfoSync(node);
+    const syncResult = await runWithdrawalMultisigSync(node, withdrawal.txHash);
     if (!syncResult || !syncResult.success) {
       console.log(
-        '[Withdrawal] Withdrawal multisig sync failed (generic multisig-info sync):',
+        '[Withdrawal] Withdrawal multisig sync failed (PBFT-coordinated multisig-info sync):',
         syncResult && syncResult.reason ? syncResult.reason : 'unknown',
       );
       const pending = node._pendingWithdrawals.get(key);
@@ -1060,6 +1195,10 @@ async function executeWithdrawal(node, withdrawal) {
         typeof syncResult.importedOutputs === 'number' ? syncResult.importedOutputs : 'unknown'
       }`,
     );
+    const pendingAfterSync = node._pendingWithdrawals.get(key);
+    if (pendingAfterSync && Array.isArray(syncResult.signerSet) && syncResult.signerSet.length > 0) {
+      pendingAfterSync.signerSet = syncResult.signerSet.map((a) => String(a || '').toLowerCase());
+    }
 
     console.log('[Withdrawal] Creating multisig transfer transaction...');
     const destinations = [{ address: withdrawal.xmrAddress, amount: withdrawal.xmrAmountAtomic }];
@@ -1067,7 +1206,11 @@ async function executeWithdrawal(node, withdrawal) {
     try {
       txData = await node.monero.transfer(destinations);
       console.log('[Withdrawal] Transfer transaction created');
-      const signerSet = getCanonicalSignerSet(node);
+      const baseSignerSet =
+        pendingAfterSync && Array.isArray(pendingAfterSync.signerSet) && pendingAfterSync.signerSet.length > 0
+          ? pendingAfterSync.signerSet.map((a) => String(a || '').toLowerCase())
+          : getCanonicalSignerSet(node);
+      const signerSet = baseSignerSet;
       if (!signerSet || signerSet.length < REQUIRED_WITHDRAWAL_SIGNATURES) {
         console.log('[Withdrawal] Not enough signers available for PBFT tx commit');
         const pending = node._pendingWithdrawals.get(key);
