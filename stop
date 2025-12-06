@@ -55,6 +55,44 @@ stop_cluster_aggregator() {
   fi
 }
 
+stop_monero_rpc() {
+  local root="$SCRIPT_DIR"
+  local pid_file_rpc="${MONERO_RPC_PID_FILE:-$root/monero-rpc.pid}"
+  if [ -f "$pid_file_rpc" ]; then
+    local pid
+    pid="$(cat "$pid_file_rpc" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      echo "[stop] Stopping monero-wallet-rpc (PID $pid)..."
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+      fi
+    fi
+    rm -f "$pid_file_rpc" 2>/dev/null || true
+  fi
+  local port="${MONERO_RPC_PORT:-18083}"
+  local pids=""
+  if command -v ss >/dev/null 2>&1; then
+    pids=$(ss -ltnp 2>/dev/null | awk -v p=":"$port"" '/monero-wallet-rpc/ && $4 ~ p { match($0, /pid=([0-9]+)/, m); if (m[1] != "") print m[1]; }' | sort -u)
+  elif command -v netstat >/dev/null 2>&1; then
+    pids=$(netstat -ltnp 2>/dev/null | awk -v p=":"$port"" '$4 ~ p { n = split($7, a, "/"); if (n > 1 && a[2] == "monero-wallet-rpc") print a[1]; }' | sort -u)
+  fi
+  if [ -n "$pids" ]; then
+    echo "[stop] Stopping stray monero-wallet-rpc on port $port (PIDs: $pids)..."
+    for pid in $pids; do
+      kill "$pid" 2>/dev/null || true
+    done
+    sleep 1
+    for pid in $pids; do
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+      fi
+    done
+  fi
+}
+
+
 # Check if systemd service exists and is running
 if [ -f "/etc/systemd/system/$SERVICE_NAME" ]; then
   if systemctl is-active --quiet "$SERVICE_NAME"; then
@@ -67,6 +105,7 @@ if [ -f "/etc/systemd/system/$SERVICE_NAME" ]; then
         echo "[stop] znode stopped."
         stop_p2p_daemon
         stop_cluster_aggregator
+        stop_monero_rpc
         rm -f "$PID_FILE" 2>/dev/null || true
         exit 0
       fi
@@ -77,6 +116,7 @@ if [ -f "/etc/systemd/system/$SERVICE_NAME" ]; then
     systemctl kill "$SERVICE_NAME" 2>/dev/null || true
     stop_p2p_daemon
         stop_cluster_aggregator
+        stop_monero_rpc
     rm -f "$PID_FILE" 2>/dev/null || true
     echo "[stop] znode forcibly stopped."
     exit 0
@@ -84,6 +124,7 @@ if [ -f "/etc/systemd/system/$SERVICE_NAME" ]; then
     echo "[stop] znode is not running (systemd service inactive)."
     stop_p2p_daemon
         stop_cluster_aggregator
+        stop_monero_rpc
     rm -f "$PID_FILE" 2>/dev/null || true
     exit 0
   fi
@@ -96,6 +137,7 @@ if [ ! -f "$PID_FILE" ]; then
   echo "[stop] No pidfile found ($PID_FILE). Is znode running?"
   stop_p2p_daemon
         stop_cluster_aggregator
+        stop_monero_rpc
   exit 0
 fi
 
@@ -105,6 +147,7 @@ if [ -z "$PID" ]; then
   rm -f "$PID_FILE"
   stop_p2p_daemon
         stop_cluster_aggregator
+        stop_monero_rpc
   exit 0
 fi
 
@@ -113,6 +156,7 @@ if ! kill -0 "$PID" 2>/dev/null; then
   rm -f "$PID_FILE"
   stop_p2p_daemon
         stop_cluster_aggregator
+        stop_monero_rpc
   exit 0
 fi
 
@@ -126,6 +170,7 @@ for i in $(seq 1 30); do
     rm -f "$PID_FILE"
     stop_p2p_daemon
         stop_cluster_aggregator
+        stop_monero_rpc
     exit 0
   fi
   sleep 1
@@ -136,4 +181,5 @@ kill -9 "$PID" 2>/dev/null || true
 rm -f "$PID_FILE"
 stop_p2p_daemon
         stop_cluster_aggregator
+        stop_monero_rpc
 echo "[stop] znode forcibly stopped."

@@ -5,6 +5,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 
+kill_monero_rpc_on_port() {
+  local port="$1"
+  local pids=""
+  if command -v ss >/dev/null 2>&1; then
+    pids=$(ss -ltnp 2>/dev/null | awk -v p=":"$port"" '/monero-wallet-rpc/ && $4 ~ p { match($0, /pid=([0-9]+)/, m); if (m[1] != "") print m[1]; }' | sort -u)
+  elif command -v netstat >/dev/null 2>&1; then
+    pids=$(netstat -ltnp 2>/dev/null | awk -v p=":"$port"" '$4 ~ p { n = split($7, a, "/"); if (n > 1 && a[2] == "monero-wallet-rpc") print a[1]; }' | sort -u)
+  fi
+  if [ -n "$pids" ]; then
+    echo "[start-monero-rpc] Detected existing monero-wallet-rpc on port $port (PIDs: $pids), stopping..."
+    for pid in $pids; do
+      kill "$pid" 2>/dev/null || true
+    done
+    sleep 1
+    for pid in $pids; do
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+      fi
+    done
+  fi
+}
+
 if [ -f "$ROOT_DIR/.env" ]; then
   set -a
   . "$ROOT_DIR/.env"
@@ -51,6 +73,8 @@ if [ -f "$PID_FILE" ]; then
   fi
   rm -f "$PID_FILE"
 fi
+
+kill_monero_rpc_on_port "$PORT"
 
 echo "[start-monero-rpc] Starting wallet RPC (daemon: $DAEMON, wallet dir: $WALLET_DIR, port: $PORT)"
 
