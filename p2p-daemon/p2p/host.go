@@ -451,7 +451,9 @@ func (h *Host) WaitForRoundCompletion(clusterID string, round int, members []str
 	}
 	cs.mu.RUnlock()
 
-	log.Printf("[P2P] Waiting for round %d completion from %d members", round, len(members))
+	quorum := pbftQuorum(len(membersLower))
+
+	log.Printf("[P2P] Waiting for round %d completion from %d members (quorum=%d)", round, len(members), quorum)
 
 	for time.Now().Before(deadline) {
 		cs.mu.RLock()
@@ -466,12 +468,12 @@ func (h *Host) WaitForRoundCompletion(clusterID string, round int, members []str
 		}
 		cs.mu.RUnlock()
 
-		if len(received) >= len(membersLower) {
-			log.Printf("[P2P] Round %d complete: %d/%d received", round, len(received), len(membersLower))
+		if len(received) >= quorum {
+			log.Printf("[P2P] Round %d complete: %d/%d received (quorum=%d)", round, len(received), len(membersLower), quorum)
 			return &RoundCompletionResult{
 				Complete: true,
 				Received: received,
-				Missing:  nil,
+				Missing:  missing,
 			}, nil
 		}
 
@@ -765,6 +767,8 @@ func (h *Host) WaitForSignatureBarrier(clusterID string, round int, members []st
 		membersLower[i] = strings.ToLower(m)
 	}
 
+	quorum := pbftQuorum(len(membersLower))
+
 	// Try to compute consensus hash from round data (may be empty for ready barriers)
 	expectedHash := h.ComputePayloadConsensusHash(clusterID, round, members)
 
@@ -816,9 +820,9 @@ func (h *Host) WaitForSignatureBarrier(clusterID string, round int, members []st
 		}
 		cs.mu.RUnlock()
 
-		// Success: all signatures collected with matching hashes
-		if len(sigs) >= len(membersLower) && len(hashMismatches) == 0 {
-			log.Printf("[P2P] Round %d signature barrier complete", round)
+		// Success: quorum signatures collected with matching hashes
+		if len(sigs) >= quorum && len(hashMismatches) == 0 {
+			log.Printf("[P2P] Round %d signature barrier complete (%d/%d, quorum=%d)", round, len(sigs), len(membersLower), quorum)
 			return &SignatureBarrierResult{
 				Complete:      true,
 				Signatures:    sigs,
@@ -1391,12 +1395,11 @@ func (h *Host) GetPBFTManager() *PBFTManager {
 	return h.pbft
 }
 
-
 // getPeerIDForAddress returns the peer ID for an Ethereum address
 // Checks cluster bindings first, then heartbeat data
 func (h *Host) getPeerIDForAddress(address string) string {
 	address = strings.ToLower(address)
-	
+
 	// Check cluster bindings first
 	h.mu.RLock()
 	for _, cs := range h.clusters {
