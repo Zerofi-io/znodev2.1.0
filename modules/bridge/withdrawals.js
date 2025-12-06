@@ -57,6 +57,7 @@ function isBridgeEnabled() {
 const WITHDRAWAL_CASCADE_INTERVAL_MS = Number(process.env.WITHDRAWAL_CASCADE_INTERVAL_MS || 60000);
 const REQUIRED_WITHDRAWAL_SIGNATURES = 7;
 const MULTISIG_SYNC_ROUND = Number(process.env.MULTISIG_SYNC_ROUND || 9800);
+const WITHDRAWAL_MULTISIG_SYNC_ROUND = Number(process.env.WITHDRAWAL_MULTISIG_SYNC_ROUND || 9902);
 const MULTISIG_SYNC_TIMEOUT_MS = Number(process.env.MULTISIG_SYNC_TIMEOUT_MS || 180000);
 const MULTISIG_SYNC_SEEN_TTL_MS = Number(process.env.MULTISIG_SYNC_SEEN_TTL_MS || 3600000);
 const WITHDRAWAL_SIGN_STEP_TIMEOUT_MS = Number(process.env.WITHDRAWAL_SIGN_STEP_TIMEOUT_MS || 20000);
@@ -264,6 +265,10 @@ function setupMultisigSyncResponder(node) {
 
   const pollMultisigSync = async () => {
     if (!node._withdrawalMonitorRunning) return;
+    if (node._withdrawalMultisigLock) {
+      if (node._withdrawalMonitorRunning) setTimeout(pollMultisigSync, 3000);
+      return;
+    }
     try {
       const payloads = await node.p2p.getPeerPayloads(
         node._activeClusterId,
@@ -374,13 +379,6 @@ function setupWithdrawalSignStepListener(node) {
             const key = `${String(data.withdrawalTxHash).toLowerCase()}:${idx}`;
             if (node._handledSignSteps.has(key)) continue;
 
-            try {
-              const quickImport = await quickImportPeerMultisigInfo(node);
-              if (quickImport.imported && quickImport.importedOutputs > 0) {
-                console.log(`[Withdrawal] Quick-imported ${quickImport.importedOutputs} outputs before sign step`);
-              }
-            } catch (_ignored) {}
-
             let signedTx;
             try {
               signedTx = await node.monero.signMultisig(data.txDataHex);
@@ -397,31 +395,6 @@ function setupWithdrawalSignStepListener(node) {
                   });
                   await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', 9901, notice);
                 } catch (_ignored) {}
-                (async () => {
-                  try {
-                    console.log('[Withdrawal] Starting multisig sync after stale sign step...');
-                    const syncResult = await runMultisigInfoSync(node);
-                    if (!syncResult || !syncResult.success) {
-                      console.log(
-                        '[Withdrawal] Multisig sync after stale sign step failed:',
-                        syncResult && syncResult.reason ? syncResult.reason : 'unknown',
-                      );
-                    } else {
-                      console.log(
-                        `[Withdrawal] Multisig sync after stale sign step completed; importedOutputs=${
-                          typeof syncResult.importedOutputs === 'number'
-                            ? syncResult.importedOutputs
-                            : 'unknown'
-                        }`,
-                      );
-                    }
-                  } catch (e2) {
-                    console.log(
-                      '[Withdrawal] Multisig sync after stale sign step error:',
-                      e2.message || String(e2),
-                    );
-                  }
-                })();
               } else {
                 console.log('[Withdrawal] Failed to sign step tx:', msg);
               }
@@ -771,48 +744,169 @@ function tickPendingWithdrawals(node) {
   }
 }
 
-async function quickImportPeerMultisigInfo(node) {
-  if (!node || !node.monero || !node.p2p || !node._activeClusterId || !Array.isArray(node._clusterMembers)) {
-    return { imported: false, reason: 'missing_deps' };
+async function runWithdrawalMultisigSync(node, withdrawal) {
+  if (!node || !node.monero || !node.p2p || !node._activeClusterId || !Array.isArray(node._clusterMembers) || node._clusterMembers.length === 0 || !node.wallet || !node.wallet.address) {
+    return { success: false, reason: 'no_cluster_or_monero' };
   }
   const clusterId = node._activeClusterId;
   const sessionId = node._sessionId || 'bridge';
-  const selfAddress = node.wallet && node.wallet.address ? node.wallet.address.toLowerCase() : null;
+  const totalMembers = node._clusterMembers.length;
+  const minSigners = REQUIRED_WITHDRAWAL_SIGNATURES;
+  const windowMs = Number(process.env.WITHDRAWAL_MULTISIG_SYNC_WINDOW_MS || process.env.MULTISIG_SYNC_WINDOW_MS || 10000);
+  const txHash = withdrawal && withdrawal.txHash ? String(withdrawal.txHash) : null;
+  const shortEth = txHash ? getWithdrawalShortHash(txHash) : '';
+  const phase = shortEth ? `withdrawal-multisig-sync-${shortEth}` : 'withdrawal-multisig-sync';
 
-  let payloads = [];
+  let localInfo;
   try {
-    payloads = await node.p2p.getPeerPayloads(clusterId, sessionId, MULTISIG_SYNC_ROUND, node._clusterMembers);
-  } catch (_ignored) {
-    return { imported: false, reason: 'get_payloads_failed' };
+    localInfo = await node.monero.exportMultisigInfo();
+  } catch (e) {
+    console.log('[Withdrawal] export_multisig_info before withdrawal failed:', e.message || String(e));
+    return { success: false, reason: 'export_failed' };
   }
 
-  if (!payloads || payloads.length === 0) {
-    return { imported: false, reason: 'no_payloads' };
+  const selfAddress = node.wallet.address.toLowerCase();
+  const responders = new Set();
+  responders.add(selfAddress);
+
+  const payload = JSON.stringify({
+    type: 'withdrawal-multisig-info',
+    clusterId,
+    txHash,
+    info: localInfo,
+    sender: node.wallet.address,
+  });
+
+  const seenInfosBySender = new Map();
+  seenInfosBySender.set(selfAddress, localInfo);
+  const start = Date.now();
+
+  try {
+    await node.p2p.broadcastRoundData(clusterId, sessionId, WITHDRAWAL_MULTISIG_SYNC_ROUND, payload);
+  } catch (e) {
+    console.log('[Withdrawal] Failed to broadcast withdrawal multisig info:', e.message || String(e));
   }
 
-  const infos = [];
-  for (const raw of payloads) {
+  while (true) {
+    const elapsed = Date.now() - start;
     try {
-      const data = JSON.parse(raw);
-      if (data && data.type === 'multisig-info' && typeof data.info === 'string' && data.info.length > 0) {
-        const sender = (data.sender || '').toLowerCase();
-        if (sender && sender !== selfAddress) {
-          infos.push(data.info);
+      const peerPayloads = await node.p2p.getPeerPayloads(
+        clusterId,
+        sessionId,
+        WITHDRAWAL_MULTISIG_SYNC_ROUND,
+        node._clusterMembers,
+      );
+      if (peerPayloads && peerPayloads.length > 0) {
+        for (const raw of peerPayloads) {
+          let data;
+          try {
+            data = JSON.parse(raw);
+          } catch (_ignored) {
+            continue;
+          }
+          if (!data || data.type !== 'withdrawal-multisig-info' || typeof data.info !== 'string' || data.info.length === 0) continue;
+          if (txHash && String(data.txHash || '').toLowerCase() !== txHash.toLowerCase()) continue;
+          const sender = (data.sender || '').toLowerCase();
+          if (!sender) continue;
+          responders.add(sender);
+          if (!seenInfosBySender.has(sender)) {
+            seenInfosBySender.set(sender, data.info);
+          }
         }
       }
-    } catch (_ignored) {}
+    } catch (e) {
+      console.log('[Withdrawal] Error while polling withdrawal multisig info payloads:', e.message || String(e));
+    }
+
+    const responderCount = responders.size;
+    if (responderCount >= totalMembers) {
+      console.log(`[Withdrawal] Withdrawal multisig sync all ${totalMembers}/${totalMembers} participants responded; finishing early`);
+      break;
+    }
+    if (elapsed >= windowMs) {
+      console.log(
+        `[Withdrawal] Withdrawal multisig sync window expired after ${Math.round(
+          elapsed / 1000,
+        )}s: responders=${responderCount}/${totalMembers}`,
+      );
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 
+  const responderCount = responders.size;
+  if (responderCount < minSigners) {
+    console.log(
+      `[Withdrawal] Not enough participants for withdrawal multisig sync: responders=${responderCount}/${totalMembers}, required=${minSigners}`,
+    );
+    return { success: false, reason: 'not_enough_participants', importedOutputs: 0 };
+  }
+
+  const infos = Array.from(seenInfosBySender.values());
   if (infos.length === 0) {
-    return { imported: false, reason: 'no_peer_infos' };
+    console.log('[Withdrawal] No valid withdrawal multisig info entries parsed from peer payloads');
+    return { success: false, reason: 'no_valid_infos' };
   }
 
+  let importedOutputs = 0;
   try {
     const n = await node.monero.importMultisigInfo(infos);
-    return { imported: true, importedOutputs: typeof n === 'number' ? n : 0 };
+    if (typeof n === 'number') importedOutputs = n;
   } catch (e) {
-    return { imported: false, reason: 'import_failed', error: e.message || String(e) };
+    console.log('[Withdrawal] import_multisig_info for withdrawal failed:', e.message || String(e));
+    return { success: false, reason: 'import_failed', importedOutputs: 0 };
   }
+
+  let finalBalance = null;
+  try {
+    finalBalance = await node.monero.getBalance();
+  } catch (e) {
+    console.log('[Withdrawal] Failed to get balance after withdrawal multisig sync:', e.message || String(e));
+  }
+
+  if (finalBalance && finalBalance.multisigImportNeeded) {
+    console.log('[Withdrawal] multisig_import_needed still true after withdrawal multisig sync attempt');
+    return {
+      success: false,
+      reason: 'multisig_import_needed_still_true',
+      importedOutputs,
+    };
+  }
+
+  const consensusPayload = JSON.stringify({
+    txHash,
+    participants: Array.from(responders).sort(),
+    importedOutputs,
+  });
+  let digest;
+  try {
+    digest = ethers.keccak256(ethers.toUtf8Bytes(consensusPayload));
+  } catch (e) {
+    console.log('[Withdrawal] Failed to compute multisig sync digest:', e.message || String(e));
+    return { success: false, reason: 'digest_failed', importedOutputs };
+  }
+
+  let result;
+  const timeoutMs = Number(process.env.WITHDRAWAL_MULTISIG_SYNC_TIMEOUT_MS || MULTISIG_SYNC_TIMEOUT_MS || 180000);
+  try {
+    result = await node.p2p.runConsensus(clusterId, sessionId, phase, digest, node._clusterMembers, timeoutMs);
+  } catch (e) {
+    console.log('[Withdrawal] Withdrawal multisig sync PBFT error:', e.message || String(e));
+    return { success: false, reason: 'pbft_error', importedOutputs };
+  }
+
+  if (!result || !result.success) {
+    console.log(
+      '[Withdrawal] Withdrawal multisig sync PBFT failed:',
+      result && result.reason ? result.reason : 'unknown',
+    );
+    return { success: false, reason: result && result.reason ? result.reason : 'pbft_failed', importedOutputs };
+  }
+
+  console.log(
+    `[Withdrawal] Withdrawal multisig sync completed; participants=${responderCount}/${totalMembers}, importedOutputs=${importedOutputs}`,
+  );
+  return { success: true, importedOutputs };
 }
 
 async function runMultisigInfoSync(node) {
@@ -1040,29 +1134,30 @@ async function executeWithdrawal(node, withdrawal) {
   console.log(`  Amount: ${Number(withdrawal.xmrAmount) / 1e12} XMR`);
   node._pendingWithdrawals = node._pendingWithdrawals || new Map();
   const key = withdrawal.txHash.toLowerCase();
-  clearLocalSignStepCacheForWithdrawal(node, key);
-  const existing = node._pendingWithdrawals.get(key);
-  const firstAttemptAt =
-    existing && typeof existing.firstAttemptAt === 'number'
-      ? existing.firstAttemptAt
-      : existing && typeof existing.startedAt === 'number'
-        ? existing.startedAt
-        : Date.now();
-  node._pendingWithdrawals.set(key, { ...withdrawal, status: 'pending', startedAt: Date.now(), firstAttemptAt });
-  const pending0 = node._pendingWithdrawals.get(key);
-  if (pending0) {
-    pending0.signerSet = null;
-    pending0.txDataHexUnsigned = null;
-    pending0.txDataHexSigned = null;
-    pending0.pbftUnsignedHash = null;
-    pending0.pbftSignedHash = null;
-  }
-  if (existing && existing.error === 'stale_multisig_tx') {
-    console.log('[Withdrawal] Previous attempt failed with stale_multisig_tx, running multisig sync before rebuilding transaction');
-    const syncResult = await runMultisigInfoSync(node);
+  node._withdrawalMultisigLock = key;
+  try {
+    clearLocalSignStepCacheForWithdrawal(node, key);
+    const existing = node._pendingWithdrawals.get(key);
+    const firstAttemptAt =
+      existing && typeof existing.firstAttemptAt === 'number'
+        ? existing.firstAttemptAt
+        : existing && typeof existing.startedAt === 'number'
+          ? existing.startedAt
+          : Date.now();
+    node._pendingWithdrawals.set(key, { ...withdrawal, status: 'pending', startedAt: Date.now(), firstAttemptAt });
+    const pending0 = node._pendingWithdrawals.get(key);
+    if (pending0) {
+      pending0.signerSet = null;
+      pending0.txDataHexUnsigned = null;
+      pending0.txDataHexSigned = null;
+      pending0.pbftUnsignedHash = null;
+      pending0.pbftSignedHash = null;
+    }
+  try {
+    const syncResult = await runWithdrawalMultisigSync(node, withdrawal);
     if (!syncResult || !syncResult.success) {
       console.log(
-        '[Withdrawal] Multisig sync before transfer failed:',
+        '[Withdrawal] Withdrawal multisig sync failed:',
         syncResult && syncResult.reason ? syncResult.reason : 'unknown',
       );
       const pending = node._pendingWithdrawals.get(key);
@@ -1072,39 +1167,11 @@ async function executeWithdrawal(node, withdrawal) {
       }
       return;
     }
-  }
-  try {
-    let balanceInfo = null;
-    try {
-      balanceInfo = await node.monero.getBalance();
-    } catch (e) {
-      console.log('[Withdrawal] Failed to get wallet balance before withdrawal:', e.message || String(e));
-    }
-    if (balanceInfo && balanceInfo.multisigImportNeeded) {
-      console.log('[Withdrawal] Wallet reports multisig_import_needed=true; starting multisig info sync...');
-      const syncResult = await runMultisigInfoSync(node);
-      if (!syncResult || !syncResult.success) {
-        console.log(
-          '[Withdrawal] Multisig info sync failed:',
-          syncResult && syncResult.reason ? syncResult.reason : 'unknown',
-        );
-        const pending = node._pendingWithdrawals.get(key);
-        if (pending) {
-          pending.status = 'failed';
-          pending.error = `multisig_sync_failed: ${
-            (syncResult && syncResult.reason) || 'unknown_error'
-          }`;
-        }
-        return;
-      }
-      console.log(
-        `[Withdrawal] Multisig info sync completed; importedOutputs=${
-          typeof syncResult.importedOutputs === 'number'
-            ? syncResult.importedOutputs
-            : 'unknown'
-        }`,
-      );
-    }
+    console.log(
+      `[Withdrawal] Withdrawal multisig sync completed before transfer; importedOutputs=${
+        typeof syncResult.importedOutputs === 'number' ? syncResult.importedOutputs : 'unknown'
+      }`,
+    );
     console.log('[Withdrawal] Creating multisig transfer transaction...');
     const destinations = [{ address: withdrawal.xmrAddress, amount: withdrawal.xmrAmountAtomic }];
     let txData;
@@ -1338,6 +1405,9 @@ async function executeWithdrawal(node, withdrawal) {
       }
     }
   }
+  } finally {
+    node._withdrawalMultisigLock = null;
+  }
 }
 
 export async function handleWithdrawalSignRequest(node, data) {
@@ -1359,35 +1429,7 @@ export async function handleWithdrawalSignRequest(node, data) {
   } catch (e) {
     const msg = e.message || String(e);
     if (msg.includes('stale data') || msg.includes('export fresh multisig data')) {
-      console.log(
-        '[Withdrawal] Failed to sign withdrawal tx due to stale multisig data; starting multisig sync',
-      );
-      // As with sign-step handling, we do NOT attempt to re-sign the same tx here. Instead we
-      // kick off a local multisig sync so that a future attempt can rebuild from fresh state.
-      (async () => {
-        try {
-          const syncResult = await runMultisigInfoSync(node);
-          if (!syncResult || !syncResult.success) {
-            console.log(
-              '[Withdrawal] Multisig sync after stale withdrawal sign failed:',
-              syncResult && syncResult.reason ? syncResult.reason : 'unknown',
-            );
-          } else {
-            console.log(
-              `[Withdrawal] Multisig sync after stale withdrawal sign completed; importedOutputs=${
-                typeof syncResult.importedOutputs === 'number'
-                  ? syncResult.importedOutputs
-                  : 'unknown'
-              }`,
-            );
-          }
-        } catch (e2) {
-          console.log(
-            '[Withdrawal] Multisig sync after stale withdrawal sign error:',
-            e2.message || String(e2),
-          );
-        }
-      })();
+      console.log('[Withdrawal] Failed to sign withdrawal tx due to stale multisig data');
     } else {
       console.log('[Withdrawal] Failed to sign withdrawal tx:', msg);
     }
