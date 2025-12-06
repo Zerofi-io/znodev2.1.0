@@ -391,6 +391,34 @@ function setupWithdrawalSignStepListener(node) {
                   });
                   await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', 9901, notice);
                 } catch (_ignored) {}
+                // Also try to sync our own multisig info in the background so we do not keep failing
+                // future sign steps with stale state. We intentionally do NOT re-sign this same tx
+                // here; the coordinator will rebuild a fresh transaction if needed.
+                (async () => {
+                  try {
+                    console.log('[Withdrawal] Starting multisig sync after stale sign step...');
+                    const syncResult = await runMultisigInfoSync(node);
+                    if (!syncResult || !syncResult.success) {
+                      console.log(
+                        '[Withdrawal] Multisig sync after stale sign step failed:',
+                        syncResult && syncResult.reason ? syncResult.reason : 'unknown',
+                      );
+                    } else {
+                      console.log(
+                        `[Withdrawal] Multisig sync after stale sign step completed; importedOutputs=${
+                          typeof syncResult.importedOutputs === 'number'
+                            ? syncResult.importedOutputs
+                            : 'unknown'
+                        }`,
+                      );
+                    }
+                  } catch (e2) {
+                    console.log(
+                      '[Withdrawal] Multisig sync after stale sign step error:',
+                      e2.message || String(e2),
+                    );
+                  }
+                })();
               } else {
                 console.log('[Withdrawal] Failed to sign step tx:', msg);
               }
@@ -1267,7 +1295,40 @@ export async function handleWithdrawalSignRequest(node, data) {
     }));
     console.log(`[Withdrawal] Broadcasted signature for ${data.withdrawalTxHash.slice(0, 18)}`);
   } catch (e) {
-    console.log('[Withdrawal] Failed to sign withdrawal tx:', e.message || String(e));
+    const msg = e.message || String(e);
+    if (msg.includes('stale data') || msg.includes('export fresh multisig data')) {
+      console.log(
+        '[Withdrawal] Failed to sign withdrawal tx due to stale multisig data; starting multisig sync',
+      );
+      // As with sign-step handling, we do NOT attempt to re-sign the same tx here. Instead we
+      // kick off a local multisig sync so that a future attempt can rebuild from fresh state.
+      (async () => {
+        try {
+          const syncResult = await runMultisigInfoSync(node);
+          if (!syncResult || !syncResult.success) {
+            console.log(
+              '[Withdrawal] Multisig sync after stale withdrawal sign failed:',
+              syncResult && syncResult.reason ? syncResult.reason : 'unknown',
+            );
+          } else {
+            console.log(
+              `[Withdrawal] Multisig sync after stale withdrawal sign completed; importedOutputs=${
+                typeof syncResult.importedOutputs === 'number'
+                  ? syncResult.importedOutputs
+                  : 'unknown'
+              }`,
+            );
+          }
+        } catch (e2) {
+          console.log(
+            '[Withdrawal] Multisig sync after stale withdrawal sign error:',
+            e2.message || String(e2),
+          );
+        }
+      })();
+    } else {
+      console.log('[Withdrawal] Failed to sign withdrawal tx:', msg);
+    }
   }
 }
 
