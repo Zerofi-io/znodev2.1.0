@@ -118,7 +118,6 @@ function markWithdrawalProcessedInMemory(node, txHash) {
   }
 }
 
-
 export async function startWithdrawalMonitor(node) {
   if (node._withdrawalMonitorRunning) return;
   const bridgeEnabled = isBridgeEnabled();
@@ -375,6 +374,13 @@ function setupWithdrawalSignStepListener(node) {
             const key = `${String(data.withdrawalTxHash).toLowerCase()}:${idx}`;
             if (node._handledSignSteps.has(key)) continue;
 
+            try {
+              const quickImport = await quickImportPeerMultisigInfo(node);
+              if (quickImport.imported && quickImport.importedOutputs > 0) {
+                console.log(`[Withdrawal] Quick-imported ${quickImport.importedOutputs} outputs before sign step`);
+              }
+            } catch (_ignored) {}
+
             let signedTx;
             try {
               signedTx = await node.monero.signMultisig(data.txDataHex);
@@ -391,9 +397,6 @@ function setupWithdrawalSignStepListener(node) {
                   });
                   await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', 9901, notice);
                 } catch (_ignored) {}
-                // Also try to sync our own multisig info in the background so we do not keep failing
-                // future sign steps with stale state. We intentionally do NOT re-sign this same tx
-                // here; the coordinator will rebuild a fresh transaction if needed.
                 (async () => {
                   try {
                     console.log('[Withdrawal] Starting multisig sync after stale sign step...');
@@ -765,6 +768,50 @@ function tickPendingWithdrawals(node) {
         if (current) current.retryInProgress = false;
       }
     })();
+  }
+}
+
+async function quickImportPeerMultisigInfo(node) {
+  if (!node || !node.monero || !node.p2p || !node._activeClusterId || !Array.isArray(node._clusterMembers)) {
+    return { imported: false, reason: 'missing_deps' };
+  }
+  const clusterId = node._activeClusterId;
+  const sessionId = node._sessionId || 'bridge';
+  const selfAddress = node.wallet && node.wallet.address ? node.wallet.address.toLowerCase() : null;
+
+  let payloads = [];
+  try {
+    payloads = await node.p2p.getPeerPayloads(clusterId, sessionId, MULTISIG_SYNC_ROUND, node._clusterMembers);
+  } catch (_ignored) {
+    return { imported: false, reason: 'get_payloads_failed' };
+  }
+
+  if (!payloads || payloads.length === 0) {
+    return { imported: false, reason: 'no_payloads' };
+  }
+
+  const infos = [];
+  for (const raw of payloads) {
+    try {
+      const data = JSON.parse(raw);
+      if (data && data.type === 'multisig-info' && typeof data.info === 'string' && data.info.length > 0) {
+        const sender = (data.sender || '').toLowerCase();
+        if (sender && sender !== selfAddress) {
+          infos.push(data.info);
+        }
+      }
+    } catch (_ignored) {}
+  }
+
+  if (infos.length === 0) {
+    return { imported: false, reason: 'no_peer_infos' };
+  }
+
+  try {
+    const n = await node.monero.importMultisigInfo(infos);
+    return { imported: true, importedOutputs: typeof n === 'number' ? n : 0 };
+  } catch (e) {
+    return { imported: false, reason: 'import_failed', error: e.message || String(e) };
   }
 }
 
@@ -1143,6 +1190,21 @@ async function executeWithdrawal(node, withdrawal) {
     const stepTimeoutMs = WITHDRAWAL_SIGN_STEP_TIMEOUT_MS;
     let currentTxDataHex = txData.txDataHex;
     let signedSteps = 0;
+
+    try {
+      const localInfo = await node.monero.exportMultisigInfo();
+      const msPayload = JSON.stringify({
+        type: 'multisig-info',
+        clusterId: node._activeClusterId,
+        info: localInfo,
+        sender: node.wallet && node.wallet.address ? node.wallet.address : null,
+      });
+      await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', MULTISIG_SYNC_ROUND, msPayload);
+      console.log('[Withdrawal] Broadcasted coordinator multisig info before signing loop');
+    } catch (e) {
+      console.log('[Withdrawal] Failed to broadcast coordinator multisig info:', e.message || String(e));
+    }
+
     if (pendingSigner) {
       pendingSigner.currentStepIndex = 0;
       pendingSigner.currentTxDataHex = currentTxDataHex;
