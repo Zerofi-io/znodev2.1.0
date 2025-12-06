@@ -18,18 +18,21 @@ const (
 	DiscoveryNamespace = "znode/v1"
 	// DiscoveryInterval is how often to re-announce and search for peers
 	DiscoveryInterval = 30 * time.Second
+	// maxDialAttempts limits how many times we will attempt to dial a given peer
+	maxDialAttempts = 3
 )
 
 // DiscoveryManager handles DHT-based peer discovery
 type DiscoveryManager struct {
-	host       host.Host
-	ctx        context.Context
-	cancel     context.CancelFunc
-	dht        *dht.IpfsDHT
-	discovery  *drouting.RoutingDiscovery
-	mu         sync.RWMutex
-	running    bool
-	onPeerFound func(peer.AddrInfo)
+	host         host.Host
+	ctx          context.Context
+	cancel       context.CancelFunc
+	dht          *dht.IpfsDHT
+	discovery    *drouting.RoutingDiscovery
+	mu           sync.RWMutex
+	running      bool
+	onPeerFound  func(peer.AddrInfo)
+	dialAttempts map[peer.ID]int
 }
 
 // NewDiscoveryManager creates a new DHT-based discovery manager
@@ -56,11 +59,12 @@ func NewDiscoveryManager(ctx context.Context, h host.Host, bootstrapPeers []peer
 	routingDiscovery := drouting.NewRoutingDiscovery(kdht)
 
 	dm := &DiscoveryManager{
-		host:      h,
-		ctx:       dctx,
-		cancel:    cancel,
-		dht:       kdht,
-		discovery: routingDiscovery,
+		host:         h,
+		ctx:          dctx,
+		cancel:       cancel,
+		dht:          kdht,
+		discovery:    routingDiscovery,
+		dialAttempts: make(map[peer.ID]int),
 	}
 
 	return dm, nil
@@ -179,10 +183,20 @@ func (dm *DiscoveryManager) findPeers() {
 			continue
 		}
 
-		foundCount++
-		log.Printf("[Discovery] Found peer: %s", peerInfo.ID.String()[:16])
+		// Skip peers we've already tried too many times
+		dm.mu.Lock()
+		attempts := dm.dialAttempts[peerInfo.ID]
+		if attempts >= maxDialAttempts {
+			dm.mu.Unlock()
+			continue
+		}
+		dm.dialAttempts[peerInfo.ID] = attempts + 1
+		dm.mu.Unlock()
 
-		// Try to connect
+		foundCount++
+		log.Printf("[Discovery] Found peer: %s (dial attempt %d/%d)", peerInfo.ID.String()[:16], attempts+1, maxDialAttempts)
+
+		// Try to connect (single attempt for this discovery cycle)
 		go dm.connectToPeer(peerInfo)
 	}
 

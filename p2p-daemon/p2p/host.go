@@ -83,6 +83,7 @@ type Host struct {
 	clusters   map[string]*ClusterState
 	heartbeat  *HeartbeatManager
 	discovery  *DiscoveryManager
+	peerStore  *PersistentPeerStore
 	mu         sync.RWMutex
 }
 
@@ -127,6 +128,32 @@ func NewHost(ctx context.Context, config *HostConfig) (*Host, error) {
 		ethAddress: strings.ToLower(config.EthAddress),
 		ethPrivKey: ethPrivKey,
 		clusters:   make(map[string]*ClusterState),
+	}
+
+	// Initialize persistent peer store (optional) and merge any stored peers into bootstrap list
+	host.peerStore = NewPersistentPeerStoreFromEnv()
+	if host.peerStore != nil {
+		if stored := host.peerStore.LoadBootstrapMultiaddrs(); len(stored) > 0 {
+			// Merge stored addresses into the configured bootstrap list, avoiding duplicates.
+			existing := make(map[string]struct{}, len(config.BootstrapAddrs)+len(stored))
+			for _, a := range config.BootstrapAddrs {
+				if a == "" {
+					continue
+				}
+				existing[a] = struct{}{}
+			}
+			for _, a := range stored {
+				if a == "" {
+					continue
+				}
+				if _, ok := existing[a]; ok {
+					continue
+				}
+				config.BootstrapAddrs = append(config.BootstrapAddrs, a)
+				existing[a] = struct{}{}
+			}
+			log.Printf("[Peers] Loaded %d persisted peers for bootstrap", len(stored))
+		}
 	}
 
 	// Set up stream handlers
@@ -178,6 +205,12 @@ func NewHost(ctx context.Context, config *HostConfig) (*Host, error) {
 		log.Printf("Warning: Failed to initialize DHT discovery: %v", err)
 	} else {
 		host.discovery = discovery
+		// When we successfully discover and connect to a peer, remember it on disk for future bootstraps.
+		if host.peerStore != nil {
+			discovery.SetPeerFoundCallback(func(info peer.AddrInfo) {
+				host.peerStore.RememberPeer(info)
+			})
+		}
 		discovery.Start()
 		log.Printf("DHT peer discovery started")
 	}
