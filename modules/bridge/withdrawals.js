@@ -417,9 +417,9 @@ function setupWithdrawalSignStepListener(node) {
             const key = `${String(data.withdrawalTxHash).toLowerCase()}:${idx}`;
             if (node._handledSignSteps.has(key)) continue;
 
-            // Ensure we have a fresh, per-withdrawal multisig sync on this node before signing.
+            // Ensure we have a fresh multisig import on this node before signing.
             try {
-              const syncBeforeSign = await runWithdrawalMultisigSync(node, data.withdrawalTxHash);
+              const syncBeforeSign = await runMultisigInfoSync(node);
               if (!syncBeforeSign || !syncBeforeSign.success) {
                 console.log(
                   '[Withdrawal] Multisig sync before sign-step handling failed:',
