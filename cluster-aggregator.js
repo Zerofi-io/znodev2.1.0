@@ -383,6 +383,45 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Proxy GET /bridge/withdrawal/status/:ethTxHash to a healthy node
+    if (u.pathname.startsWith('/bridge/withdrawal/status/') && method === 'GET') {
+      if (!NODE_BASES.length) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No nodes configured' }));
+        return;
+      }
+
+      let lastError = null;
+      for (const base of NODE_BASES) {
+        const target = base.replace(/\/$/, '') + u.pathname;
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), NODE_TIMEOUT_MS);
+          const resp = await fetch(target, { method: 'GET', signal: controller.signal });
+          clearTimeout(timeout);
+          if (!resp.ok) {
+            lastError = new Error(`HTTP ${resp.status}`);
+            continue;
+          }
+          const data = await resp.json().catch(() => ({}));
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(data));
+          return;
+        } catch (e) {
+          lastError = e;
+        }
+      }
+
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          error: 'Withdrawal routing unavailable',
+          message: lastError ? lastError.message || String(lastError) : 'no nodes responded',
+        }),
+      );
+      return;
+    }
+
     // Proxy GET /bridge/signatures to a healthy node
     if (u.pathname === '/bridge/signatures' && method === 'GET') {
       if (!NODE_BASES.length) {
