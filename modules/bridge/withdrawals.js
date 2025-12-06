@@ -260,7 +260,6 @@ function setupWithdrawalUnsignedProposalListener(node) {
 function setupMultisigSyncResponder(node) {
   if (!node.p2p || node._multisigSyncResponderSetup) return;
   node._multisigSyncResponderSetup = true;
-  node._seenMultisigSyncPayloads = node._seenMultisigSyncPayloads || new Map();
 
   const pollMultisigSync = async () => {
     if (!node._withdrawalMonitorRunning) return;
@@ -275,14 +274,10 @@ function setupMultisigSyncResponder(node) {
         MULTISIG_SYNC_ROUND,
         node._clusterMembers,
       );
+
+      let shouldRespond = false;
       if (payloads && payloads.length > 0 && node.wallet && node.wallet.address && node.monero) {
         const self = String(node.wallet.address).toLowerCase();
-        const seen = node._seenMultisigSyncPayloads;
-        const now = Date.now();
-        for (const [sender, ts] of seen) {
-          if (now - ts > MULTISIG_SYNC_SEEN_TTL_MS) seen.delete(sender);
-        }
-        let shouldRespond = false;
         for (const raw of payloads) {
           let data;
           try {
@@ -293,30 +288,29 @@ function setupMultisigSyncResponder(node) {
           if (!data || data.type !== 'multisig-info' || !data.sender) continue;
           const senderLc = String(data.sender).toLowerCase();
           if (!senderLc || senderLc === self) continue;
-          const ts = seen.get(senderLc);
-          if (ts && now - ts <= MULTISIG_SYNC_SEEN_TTL_MS) continue;
-          seen.set(senderLc, now);
           shouldRespond = true;
+          break;
         }
-        if (shouldRespond) {
-          try {
-            const localInfo = await node.monero.exportMultisigInfo();
-            const payload = JSON.stringify({
-              type: 'multisig-info',
-              clusterId: node._activeClusterId,
-              info: localInfo,
-              sender: node.wallet.address,
-            });
-            await node.p2p.broadcastRoundData(
-              node._activeClusterId,
-              node._sessionId || 'bridge',
-              MULTISIG_SYNC_ROUND,
-              payload,
-            );
-            console.log('[MultisigSync] Responded to multisig sync request from peer');
-          } catch (e) {
-            console.log('[MultisigSync] Failed to respond to sync request:', e.message || String(e));
-          }
+      }
+
+      if (shouldRespond) {
+        try {
+          const localInfo = await node.monero.exportMultisigInfo();
+          const payload = JSON.stringify({
+            type: 'multisig-info',
+            clusterId: node._activeClusterId,
+            info: localInfo,
+            sender: node.wallet.address,
+          });
+          await node.p2p.broadcastRoundData(
+            node._activeClusterId,
+            node._sessionId || 'bridge',
+            MULTISIG_SYNC_ROUND,
+            payload,
+          );
+          console.log('[MultisigSync] Responded to multisig sync request from peer');
+        } catch (e) {
+          console.log('[MultisigSync] Failed to respond to sync request:', e.message || String(e));
         }
       }
     } catch (_ignored) {}
