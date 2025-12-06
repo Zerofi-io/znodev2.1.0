@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Internal script: automatically restores wallet backups
 set -euo pipefail
+HOME="${HOME:-/root}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_DIR="${WALLET_BACKUP_DIR:-$HOME/.znode-backup/wallets}"

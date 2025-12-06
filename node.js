@@ -1680,7 +1680,11 @@ class ZNode {
       (process.env.HOME
         ? path.join(process.env.HOME, '.monero-wallets')
         : path.join(process.cwd(), '.monero-wallets'));
-    const cliPath = process.env.MONERO_WALLET_CLI || 'monero-wallet-cli';
+    let cliPath = process.env.MONERO_WALLET_CLI || 'monero-wallet-cli';
+    if (cliPath && path.isAbsolute(cliPath) && !fs.existsSync(cliPath)) {
+      const fallback = 'monero-wallet-cli';
+      if (cliPath !== fallback) cliPath = fallback;
+    }
 
     if (!walletFile || !this.moneroPassword) {
       return false;
