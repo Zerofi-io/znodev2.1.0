@@ -432,7 +432,7 @@ async function getClusterStatus(node) {
   const finalAddress = (clusterState && clusterState.finalAddress) || node._clusterFinalAddress || null;
   const selfAddr = node.wallet && node.wallet.address ? node.wallet.address.toLowerCase() : null;
   const membersRaw = clusterState && Array.isArray(clusterState.members) ? clusterState.members : node._clusterMembers || [];
-  const members = [];
+  let members = [];
   const nowSec = Math.floor(now / 1000);
   const hbRaw = process.env.HEARTBEAT_INTERVAL;
   const hbParsed = hbRaw != null ? Number(hbRaw) : NaN;
@@ -473,21 +473,9 @@ async function getClusterStatus(node) {
   }
 
   const memberPromises = membersRaw.map(async (addr) => {
+    // Keep /cluster-status lightweight: avoid per-member p2p RPCs.
     let lastHeartbeatAgoSec = null;
-    let status = 'unknown';
-    if (node.p2p && typeof node.p2p.getLastHeartbeat === 'function') {
-      try {
-        const hb = await node.p2p.getLastHeartbeat(addr);
-        if (hb && hb.timestamp != null) {
-          const tsSec = Number(hb.timestamp);
-          if (Number.isFinite(tsSec) && tsSec > 0) {
-            const ageSec = Math.max(0, nowSec - tsSec);
-            lastHeartbeatAgoSec = ageSec;
-            status = ageSec <= staleThresholdSec ? 'healthy' : 'stale';
-          }
-        }
-      } catch (_ignored) {}
-    }
+    let status = 'healthy';
 
     const onChainClusterId = await getOnChainClusterId(addr);
     const key = String(addr || '').toLowerCase();
@@ -506,7 +494,7 @@ async function getClusterStatus(node) {
     };
   });
 
-  const members = await Promise.all(memberPromises);
+  members = await Promise.all(memberPromises);
   const cooldownUntil = (clusterState && clusterState.cooldownUntil) || node._clusterCooldownUntil || null;
   const cooldownRemainingSec = cooldownUntil && cooldownUntil > now ? Math.floor((cooldownUntil - now) / 1000) : 0;
   const lastFailureAt = (clusterState && clusterState.lastFailureAt) || node._lastClusterFailureAt || null;
