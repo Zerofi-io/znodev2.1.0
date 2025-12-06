@@ -449,15 +449,9 @@ async function getClusterStatus(node) {
   }
 
   async function getOnChainClusterId(addr) {
-    if (!clusterId) return null;
-    const key = String(addr || '').toLowerCase();
-    const isSelf = !!(selfAddr && key === selfAddr);
-    // For non-self members, trust the local clusterId without hitting the registry.
-    if (!isSelf) {
-      return String(clusterId);
-    }
     if (!node.registry || !node.registry.nodeToCluster) return null;
     try {
+      const key = String(addr || '').toLowerCase();
       const nowMs = Date.now();
       const cached = node._memberClusterCache.get(key);
       if (cached && typeof cached.ts === 'number' && nowMs - cached.ts < cacheTtlMs) {
@@ -478,11 +472,7 @@ async function getClusterStatus(node) {
     let status = 'healthy';
 
     const onChainClusterId = await getOnChainClusterId(addr);
-    const key = String(addr || '').toLowerCase();
-    const isSelf = !!(selfAddr && key === selfAddr);
-    const inCluster = isSelf
-      ? (!!clusterId && onChainClusterId && String(onChainClusterId).toLowerCase() === String(clusterId).toLowerCase())
-      : !!clusterId;
+    const inCluster = !!clusterId && onChainClusterId && String(onChainClusterId).toLowerCase() === String(clusterId).toLowerCase();
 
     return {
       address: addr,
