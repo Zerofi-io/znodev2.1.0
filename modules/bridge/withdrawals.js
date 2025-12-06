@@ -54,11 +54,9 @@ function isBridgeEnabled() {
   return v === undefined || v === '1';
 }
 
-const WITHDRAWAL_CASCADE_INTERVAL_MS = Number(process.env.WITHDRAWAL_CASCADE_INTERVAL_MS || 60000);
 const REQUIRED_WITHDRAWAL_SIGNATURES = 7;
 const MULTISIG_SYNC_ROUND = Number(process.env.MULTISIG_SYNC_ROUND || 9800);
 const MULTISIG_SYNC_TIMEOUT_MS = Number(process.env.MULTISIG_SYNC_TIMEOUT_MS || 180000);
-const MULTISIG_SYNC_SEEN_TTL_MS = Number(process.env.MULTISIG_SYNC_SEEN_TTL_MS || 3600000);
 const WITHDRAWAL_SIGN_STEP_TIMEOUT_MS = Number(process.env.WITHDRAWAL_SIGN_STEP_TIMEOUT_MS || 20000);
 const WITHDRAWAL_MAX_RETRY_WINDOW_MS = Number(process.env.WITHDRAWAL_MAX_RETRY_WINDOW_MS || 600000);
 const WITHDRAWAL_RETRY_INTERVAL_MS = Number(process.env.WITHDRAWAL_RETRY_INTERVAL_MS || 30000);
@@ -118,6 +116,70 @@ function markWithdrawalProcessedInMemory(node, txHash) {
   }
 }
 
+const WITHDRAWAL_PENDING_STORE_PATH = path.join(__dirname, '.withdrawals-pending.json');
+let _pendingWithdrawalsSavePending = false;
+
+function loadPendingWithdrawalsStoreRaw() {
+  try {
+    const raw = fs.readFileSync(WITHDRAWAL_PENDING_STORE_PATH, 'utf8');
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (_ignored) {
+    return [];
+  }
+}
+
+function hydratePendingWithdrawalsFromStore(node) {
+  if (!node) return;
+  const items = loadPendingWithdrawalsStoreRaw();
+  if (!items || items.length === 0) return;
+  node._pendingWithdrawals = node._pendingWithdrawals || new Map();
+  for (const item of items) {
+    if (!item || !item.txHash || !item.data) continue;
+    const key = String(item.txHash || '').toLowerCase();
+    if (!key) continue;
+    const data = { ...item.data };
+    if (data && typeof data.xmrAmountAtomic === 'string') {
+      try {
+        // Store as BigInt for in-memory operations like retries
+        data.xmrAmountAtomic = BigInt(data.xmrAmountAtomic);
+      } catch (_ignored) {}
+    }
+    // Do not resurrect already completed withdrawals into the pending map
+    if (data && data.status === 'completed') {
+      markWithdrawalProcessedInMemory(node, key);
+      continue;
+    }
+    node._pendingWithdrawals.set(key, data);
+  }
+}
+
+function schedulePendingWithdrawalsStoreSave(node) {
+  if (!node || !node._pendingWithdrawals || _pendingWithdrawalsSavePending) return;
+  _pendingWithdrawalsSavePending = true;
+  setTimeout(() => {
+    try {
+      const list = [];
+      for (const [txHash, value] of node._pendingWithdrawals) {
+        if (!value || typeof value !== 'object') continue;
+        const entry = {};
+        for (const [k, v] of Object.entries(value)) {
+          if (typeof v === 'bigint') {
+            entry[k] = v.toString();
+          } else {
+            entry[k] = v;
+          }
+        }
+        list.push({ txHash, data: entry });
+      }
+      fs.writeFileSync(WITHDRAWAL_PENDING_STORE_PATH, JSON.stringify(list), { mode: 0o600 });
+    } catch (e) {
+      console.log('[Withdrawal] Failed to persist pending withdrawals:', e.message || String(e));
+    }
+    _pendingWithdrawalsSavePending = false;
+  }, 50);
+}
+
 export async function startWithdrawalMonitor(node) {
   if (node._withdrawalMonitorRunning) return;
   const bridgeEnabled = isBridgeEnabled();
@@ -139,6 +201,7 @@ export async function startWithdrawalMonitor(node) {
     const persisted = loadProcessedWithdrawalsStore();
     for (const h of persisted) node._processedWithdrawals.add(h);
   } catch (_ignored) {}
+  hydratePendingWithdrawalsFromStore(node);
   node._pendingWithdrawals = node._pendingWithdrawals || new Map();
   if (node._withdrawalRetryTimer) clearInterval(node._withdrawalRetryTimer);
   node._withdrawalRetryTimer = setInterval(() => { tickPendingWithdrawals(node); }, WITHDRAWAL_RETRY_INTERVAL_MS);
@@ -187,27 +250,9 @@ export function stopWithdrawalMonitor(node) {
 function setupWithdrawalClaimListener(node) {
   if (!node.p2p || node._withdrawalClaimListenerSetup) return;
   node._withdrawalClaimListenerSetup = true;
-  node._withdrawalClaims = node._withdrawalClaims || new Map();
-  const pollClaims = async () => {
-    if (!node._withdrawalMonitorRunning) return;
-    try {
-      const payloads = await node.p2p.getPeerPayloads(node._activeClusterId, node._sessionId || 'bridge', 9899, node._clusterMembers);
-      for (const payload of payloads) {
-        try {
-          const data = JSON.parse(payload);
-          if (data.type === 'withdrawal-claim' && data.txHash && data.claimer) {
-            const key = String(data.txHash).toLowerCase();
-            const existing = node._withdrawalClaims.get(key);
-            if (!existing || existing.claimer !== data.claimer) {
-              node._withdrawalClaims.set(key, { claimer: data.claimer, timestamp: Date.now() });
-            }
-          }
-        } catch (_ignored) {}
-      }
-    } catch (_ignored) {}
-    if (node._withdrawalMonitorRunning) setTimeout(pollClaims, 5000);
-  };
-  pollClaims();
+  // Legacy: this function used to process withdrawal-claim broadcasts on round 9899.
+  // The current pipeline relies on deterministic executor selection and multisig/PBFT,
+  // so we only need to ensure the related listeners are wired once.
   setupMultisigSyncResponder(node);
   setupWithdrawalSignStepListener(node);
   setupWithdrawalUnsignedProposalListener(node);
@@ -608,11 +653,6 @@ async function getHealthyClusterMembers(node) {
     MULTISIG_SYNC_ROUND,
     (data) => (data && data.type === 'multisig-info' && data.sender ? data.sender : null),
   );
-  await collectFromRound(
-    9899,
-    (data) => (data && data.type === 'withdrawal-claim' && data.claimer ? data.claimer : null),
-  );
-
   const healthy = [];
   for (const addr of node._clusterMembers) {
     const lc = String(addr || '').toLowerCase();
@@ -735,6 +775,7 @@ function tickPendingWithdrawals(node) {
       }
     })();
   }
+  schedulePendingWithdrawalsStoreSave(node);
 }
 
 async function runMultisigInfoSync(node) {
@@ -746,6 +787,19 @@ async function runMultisigInfoSync(node) {
   const totalMembers = node._clusterMembers.length;
   const minSigners = REQUIRED_WITHDRAWAL_SIGNATURES;
   const windowMs = Number(process.env.MULTISIG_SYNC_WINDOW_MS || 10000);
+
+  if (totalMembers < minSigners) {
+    console.log(
+      `[MultisigSync] Cluster has too few members for required withdrawal signatures: total=${totalMembers}, required=${minSigners}`,
+    );
+    return {
+      success: false,
+      reason: 'cluster_too_small',
+      importedOutputs: 0,
+      responderCount: 0,
+      totalMembers,
+    };
+  }
 
   let localInfo;
   try {
@@ -929,36 +983,31 @@ async function waitForSignStepResponse(node, withdrawalTxHash, stepIndex, signer
 }
 
 async function executeWithdrawalWithCascade(node, withdrawal) {
-  const myIndex = getWithdrawalTurnIndex(node);
-  if (myIndex < 0) return;
+  const healthyMembers = await getHealthyClusterMembers(node);
+  const members = Array.isArray(healthyMembers) && healthyMembers.length > 0
+    ? healthyMembers.map((a) => String(a || '').toLowerCase())
+    : (Array.isArray(node._clusterMembers)
+        ? node._clusterMembers.map((a) => String(a || '').toLowerCase())
+        : []);
+  if (!Array.isArray(members) || members.length === 0) return;
+
+  const self = node.wallet && node.wallet.address ? String(node.wallet.address).toLowerCase() : null;
+  if (!self || !members.includes(self)) return;
+
   const key = withdrawal.txHash.toLowerCase();
-  const existingClaim = node._withdrawalClaims?.get(key);
-  if (existingClaim && Date.now() - existingClaim.timestamp < WITHDRAWAL_CASCADE_INTERVAL_MS * 2) {
-    const claimIndex = getWithdrawalTurnIndex({ ...node, wallet: { address: existingClaim.claimer } });
-    if (claimIndex >= 0 && claimIndex < myIndex) {
-      console.log(`[Withdrawal] Node ${existingClaim.claimer.slice(0, 10)} claimed this withdrawal, waiting`);
-      return;
-    }
-  }
-  const myTurnDelay = myIndex * WITHDRAWAL_CASCADE_INTERVAL_MS;
-  const consensusTimestamp = withdrawal.consensusTimestamp || Date.now();
-  const waitUntil = consensusTimestamp + myTurnDelay;
-  const waitTime = waitUntil - Date.now();
-  if (waitTime > 0) {
-    console.log(`[Withdrawal] My turn index: ${myIndex}, waiting ${Math.round(waitTime / 1000)}s`);
-    await new Promise((resolve) => setTimeout(resolve, waitTime));
-    const lateClaim = node._withdrawalClaims?.get(key);
-    if (lateClaim && Date.now() - lateClaim.timestamp < WITHDRAWAL_CASCADE_INTERVAL_MS) {
-      console.log('[Withdrawal] Another node claimed during wait, aborting');
-      return;
-    }
-  }
-  node._withdrawalClaims = node._withdrawalClaims || new Map();
-  node._withdrawalClaims.set(key, { claimer: node.wallet.address, timestamp: Date.now() });
+  node._pendingWithdrawals = node._pendingWithdrawals || new Map();
+  const existing = node._pendingWithdrawals.get(key) || {};
+  node._pendingWithdrawals.set(key, existing);
+  schedulePendingWithdrawalsStoreSave(node);
+
+  console.log(
+    `[Withdrawal] Starting withdrawal execution attempt on this node for ${withdrawal.txHash.slice(0, 18)}...`,
+  );
   try {
-    await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', 9899, JSON.stringify({ type: 'withdrawal-claim', txHash: withdrawal.txHash, claimer: node.wallet.address }));
-  } catch (_ignored) {}
-  await executeWithdrawal(node, withdrawal);
+    await executeWithdrawal(node, withdrawal);
+  } catch (e) {
+    console.log('[Withdrawal] Error executing withdrawal:', e.message || String(e));
+  }
 }
 
 async function executeWithdrawal(node, withdrawal) {
@@ -967,6 +1016,8 @@ async function executeWithdrawal(node, withdrawal) {
   node._pendingWithdrawals = node._pendingWithdrawals || new Map();
   const key = withdrawal.txHash.toLowerCase();
   node._withdrawalMultisigLock = key;
+  const shortEth = getWithdrawalShortHash(withdrawal.txHash);
+
   try {
     clearLocalSignStepCacheForWithdrawal(node, key);
     const existing = node._pendingWithdrawals.get(key);
@@ -976,7 +1027,12 @@ async function executeWithdrawal(node, withdrawal) {
         : existing && typeof existing.startedAt === 'number'
           ? existing.startedAt
           : Date.now();
-    node._pendingWithdrawals.set(key, { ...withdrawal, status: 'pending', startedAt: Date.now(), firstAttemptAt });
+    node._pendingWithdrawals.set(key, {
+      ...withdrawal,
+      status: 'pending',
+      startedAt: Date.now(),
+      firstAttemptAt,
+    });
     const pending0 = node._pendingWithdrawals.get(key);
     if (pending0) {
       pending0.signerSet = null;
@@ -985,7 +1041,7 @@ async function executeWithdrawal(node, withdrawal) {
       pending0.pbftUnsignedHash = null;
       pending0.pbftSignedHash = null;
     }
-  try {
+
     const syncResult = await runMultisigInfoSync(node);
     if (!syncResult || !syncResult.success) {
       console.log(
@@ -1004,6 +1060,7 @@ async function executeWithdrawal(node, withdrawal) {
         typeof syncResult.importedOutputs === 'number' ? syncResult.importedOutputs : 'unknown'
       }`,
     );
+
     console.log('[Withdrawal] Creating multisig transfer transaction...');
     const destinations = [{ address: withdrawal.xmrAddress, amount: withdrawal.xmrAmountAtomic }];
     let txData;
@@ -1030,7 +1087,6 @@ async function executeWithdrawal(node, withdrawal) {
       const unsignedHash = ethers.keccak256(ethers.toUtf8Bytes(unsignedPayload));
       const clusterId = node._activeClusterId;
       const sessionId = node._sessionId || 'bridge';
-      const shortEth = getWithdrawalShortHash(withdrawal.txHash);
       const pendingUnsigned = node._pendingWithdrawals.get(key);
       if (pendingUnsigned) {
         pendingUnsigned.signerSet = signerSet;
@@ -1039,9 +1095,18 @@ async function executeWithdrawal(node, withdrawal) {
       }
       try {
         try {
-          await node.p2p.broadcastRoundData(clusterId, sessionId, WITHDRAWAL_UNSIGNED_INFO_ROUND, unsignedPayload);
+          await node.p2p.broadcastRoundData(
+            clusterId,
+            sessionId,
+            WITHDRAWAL_UNSIGNED_INFO_ROUND,
+            unsignedPayload,
+          );
         } catch (_ignored) {}
-        const txConsensus = await runUnsignedWithdrawalTxConsensus(node, withdrawal.txHash, unsignedHash);
+        const txConsensus = await runUnsignedWithdrawalTxConsensus(
+          node,
+          withdrawal.txHash,
+          unsignedHash,
+        );
         if (!txConsensus || !txConsensus.success) {
           const reason = txConsensus && txConsensus.reason ? txConsensus.reason : 'tx_pbft_failed';
           const pending = node._pendingWithdrawals.get(key);
@@ -1055,7 +1120,7 @@ async function executeWithdrawal(node, withdrawal) {
         const pending = node._pendingWithdrawals.get(key);
         if (pending) {
           pending.status = 'failed';
-          pending.error = err && err.message ? err.message : 'tx_pbft_error';
+          pending.error = (err && err.message) || 'tx_pbft_error';
         }
         return;
       }
@@ -1068,6 +1133,7 @@ async function executeWithdrawal(node, withdrawal) {
       }
       return;
     }
+
     if (!txData || !txData.txDataHex) {
       console.log('[Withdrawal] No transaction data returned from transfer');
       const pending = node._pendingWithdrawals.get(key);
@@ -1077,15 +1143,19 @@ async function executeWithdrawal(node, withdrawal) {
       }
       return;
     }
+
     const pendingSigner = node._pendingWithdrawals.get(key);
-    const signerSet = pendingSigner && Array.isArray(pendingSigner.signerSet) && pendingSigner.signerSet.length > 0
-      ? pendingSigner.signerSet.map((a) => String(a || '').toLowerCase())
-      : getCanonicalSignerSet(node);
+    const canonicalSignerSet = getCanonicalSignerSet(node);
+    const signerSet =
+      pendingSigner && Array.isArray(pendingSigner.signerSet) && pendingSigner.signerSet.length > 0
+        ? pendingSigner.signerSet.map((a) => String(a || '').toLowerCase())
+        : canonicalSignerSet;
     if (!signerSet || signerSet.length < REQUIRED_WITHDRAWAL_SIGNATURES) {
       console.log('[Withdrawal] Not enough signers available for sequential signing');
       if (pendingSigner) pendingSigner.status = 'signing_failed';
       return;
     }
+
     const stepTimeoutMs = WITHDRAWAL_SIGN_STEP_TIMEOUT_MS;
     let currentTxDataHex = txData.txDataHex;
     let signedSteps = 0;
@@ -1098,7 +1168,12 @@ async function executeWithdrawal(node, withdrawal) {
         info: localInfo,
         sender: node.wallet && node.wallet.address ? node.wallet.address : null,
       });
-      await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', MULTISIG_SYNC_ROUND, msPayload);
+      await node.p2p.broadcastRoundData(
+        node._activeClusterId,
+        node._sessionId || 'bridge',
+        MULTISIG_SYNC_ROUND,
+        msPayload,
+      );
       console.log('[Withdrawal] Broadcasted coordinator multisig info before signing loop');
     } catch (e) {
       console.log('[Withdrawal] Failed to broadcast coordinator multisig info:', e.message || String(e));
@@ -1108,6 +1183,7 @@ async function executeWithdrawal(node, withdrawal) {
       pendingSigner.currentStepIndex = 0;
       pendingSigner.currentTxDataHex = currentTxDataHex;
     }
+
     for (let i = 0; i < signerSet.length && signedSteps < REQUIRED_WITHDRAWAL_SIGNATURES; i++) {
       const stepSigner = signerSet[i];
       const requestPayload = JSON.stringify({
@@ -1118,9 +1194,20 @@ async function executeWithdrawal(node, withdrawal) {
         txDataHex: currentTxDataHex,
       });
       try {
-        await node.p2p.broadcastRoundData(node._activeClusterId, node._sessionId || 'bridge', 9900, requestPayload);
+        await node.p2p.broadcastRoundData(
+          node._activeClusterId,
+          node._sessionId || 'bridge',
+          9900,
+          requestPayload,
+        );
       } catch (_ignored) {}
-      const response = await waitForSignStepResponse(node, withdrawal.txHash, i, stepSigner, stepTimeoutMs);
+      const response = await waitForSignStepResponse(
+        node,
+        withdrawal.txHash,
+        i,
+        stepSigner,
+        stepTimeoutMs,
+      );
       if (!response || (!response.txDataHex && !response.stale)) {
         console.log('[Withdrawal] Sign step timeout or invalid response, skipping signer');
         continue;
@@ -1173,12 +1260,14 @@ async function executeWithdrawal(node, withdrawal) {
         p2.currentTxDataHex = currentTxDataHex;
       }
     }
+
     if (signedSteps < REQUIRED_WITHDRAWAL_SIGNATURES) {
       console.log('[Withdrawal] Not enough sequential sign steps completed');
       const p = node._pendingWithdrawals.get(key);
       if (p) p.status = 'signing_failed';
       return;
     }
+
     console.log('[Withdrawal] Submitting sequentially signed transaction...');
     try {
       const finalTxHex = currentTxDataHex;
@@ -1236,11 +1325,11 @@ async function executeWithdrawal(node, withdrawal) {
         pending.error = e.message;
       }
     }
-  }
   } finally {
     node._withdrawalMultisigLock = null;
   }
 }
+
 
 export async function handleWithdrawalSignRequest(node, data) {
   if (!data || !data.txDataHex || !data.withdrawalTxHash) {
